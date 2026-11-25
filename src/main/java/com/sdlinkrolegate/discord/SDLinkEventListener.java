@@ -41,6 +41,13 @@ public final class SDLinkEventListener {
     }
 
     @CraterEventListener(priority = CraterEventPriority.LOWEST)
+    public void onPlayerLoggedIn(CraterPlayerEvent.PlayerLoggedIn event) {
+        if (event.getPlayer() != null && event.getPlayer().getUUID() != null) {
+            roleGateManager.onPlayerLoggedInProcessed(event.getPlayer().getUUID());
+        }
+    }
+
+    @CraterEventListener(priority = CraterEventPriority.LOWEST)
     public void onPlayerLoggedOut(CraterPlayerEvent.PlayerLoggedOut event) {
         if (event.getPlayer() != null && event.getPlayer().getUUID() != null) {
             roleGateManager.onPlayerLoggedOutComplete(event.getPlayer().getUUID());

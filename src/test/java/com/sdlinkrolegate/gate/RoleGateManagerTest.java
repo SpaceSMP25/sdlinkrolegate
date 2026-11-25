@@ -74,6 +74,7 @@ class RoleGateManagerTest {
         assertFalse(manager.isRestricted(uuid));
         assertEquals(0, host.restrictedCalls.getOrDefault(uuid, 0));
         assertEquals(1, host.verifiedCalls.getOrDefault(uuid, 0));
+        assertEquals(0, host.discordJoinCalls.getOrDefault(uuid, 0));
     }
 
     @Test
@@ -334,6 +335,62 @@ class RoleGateManagerTest {
         host.drainTasks();
 
         assertFalse(manager.shouldSuppressDiscordMessages(uuid));
+        assertEquals(0, host.discordJoinCalls.getOrDefault(uuid, 0));
+    }
+
+    @Test
+    void replaysDiscordJoinOnlyWhenSuppressedPlayerBecomesVerified() {
+        // 1) Async REST check: verified player joins, CraterLib LoggedIn fires while pending, then async resolves true.
+        UUID asyncVerifiedUuid = UUID.randomUUID();
+        TestPlayer asyncVerified = new TestPlayer(asyncVerifiedUuid, "AsyncVerified", false, false);
+        roleLookup.linkedIds.put(asyncVerifiedUuid, "discord-async-ok");
+        roleLookup.sync = false;
+
+        manager.onPlayerJoin(asyncVerified);
+        assertTrue(manager.shouldSuppressDiscordMessages(asyncVerifiedUuid));
+        manager.onPlayerLoggedInProcessed(asyncVerifiedUuid);
+
+        host.onlinePlayers.put(asyncVerifiedUuid, asyncVerified);
+        roleLookup.completeAsync(true);
+        host.drainTasks();
+
+        assertFalse(manager.isRestricted(asyncVerifiedUuid));
+        assertFalse(manager.shouldSuppressDiscordMessages(asyncVerifiedUuid));
+        assertEquals(1, host.discordJoinCalls.getOrDefault(asyncVerifiedUuid, 0));
+
+        // Subsequent verification refresh should not replay the Discord join a second time.
+        manager.onPlayerVerificationChanged(asyncVerifiedUuid);
+        host.drainTasks();
+        assertEquals(1, host.discordJoinCalls.getOrDefault(asyncVerifiedUuid, 0));
+
+        // 2) Bot not ready at join: player joins before SDLinkReadyEvent, then bot becomes ready.
+        UUID startupUuid = UUID.randomUUID();
+        TestPlayer startupPlayer = new TestPlayer(startupUuid, "StartupVerified", false, false);
+        roleLookup.botReady = false;
+        roleLookup.sync = true;
+        roleLookup.linkedIds.put(startupUuid, "discord-startup");
+        roleLookup.membersWithRole.put("discord-startup", true);
+
+        manager.onPlayerJoin(startupPlayer);
+        manager.onPlayerLoggedInProcessed(startupUuid);
+        assertTrue(manager.shouldSuppressDiscordMessages(startupUuid));
+
+        host.onlinePlayers.put(startupUuid, startupPlayer);
+        roleLookup.botReady = true;
+        manager.onBotReady();
+        host.drainTasks();
+
+        assertFalse(manager.shouldSuppressDiscordMessages(startupUuid));
+        assertEquals(1, host.discordJoinCalls.getOrDefault(startupUuid, 0));
+
+        // 3) Truly unverified player leaves without verifying -> never announces join to Discord.
+        UUID unverifiedUuid = UUID.randomUUID();
+        TestPlayer unverified = new TestPlayer(unverifiedUuid, "NeverVerified", false, false);
+        manager.onPlayerJoin(unverified);
+        manager.onPlayerLoggedInProcessed(unverifiedUuid);
+        manager.onPlayerDisconnect(unverifiedUuid);
+        manager.onPlayerLoggedOutComplete(unverifiedUuid);
+        assertEquals(0, host.discordJoinCalls.getOrDefault(unverifiedUuid, 0));
     }
 
     private record TestPlayer(UUID uuid, String name, boolean isDisconnected, boolean isOperator)
@@ -380,6 +437,7 @@ class RoleGateManagerTest {
         final Map<UUID, Integer> restrictedCalls = new HashMap<>();
         final Map<UUID, Integer> verifiedCalls = new HashMap<>();
         final Map<UUID, Integer> modalCalls = new HashMap<>();
+        final Map<UUID, Integer> discordJoinCalls = new HashMap<>();
         final Queue<Runnable> queuedTasks = new ArrayDeque<>();
         boolean sameThread = true;
 
@@ -439,6 +497,11 @@ class RoleGateManagerTest {
 
         @Override
         public void onConfigUpdated(ModConfig.ConfigData config) {
+        }
+
+        @Override
+        public void announceDiscordJoin(RoleGateManager.PlayerRef player) {
+            discordJoinCalls.merge(player.uuid(), 1, Integer::sum);
         }
     }
 }

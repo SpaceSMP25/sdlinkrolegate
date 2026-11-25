@@ -1,5 +1,8 @@
 package com.sdlinkrolegate.gate;
 
+import com.hypherionmc.craterlib.api.events.server.CraterPlayerEvent;
+import com.hypherionmc.craterlib.impl.api.world.entity.player.BridgedPlayer;
+import com.hypherionmc.sdlink.server.ServerEvents;
 import com.sdlinkrolegate.compat.LuckPermsHook;
 import com.sdlinkrolegate.config.ModConfig;
 import com.sdlinkrolegate.discord.DiscordRoleListener;
@@ -68,6 +71,8 @@ public final class RoleGateManager {
         void removeLuckPermsGroup(UUID uuid, String groupName);
 
         void onConfigUpdated(ModConfig.ConfigData config);
+
+        void announceDiscordJoin(PlayerRef player);
     }
 
     private final ModConfig modConfig;
@@ -78,6 +83,7 @@ public final class RoleGateManager {
     private final Logger logger;
 
     private final Set<UUID> restrictedPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> suppressedJoinPlayers = ConcurrentHashMap.newKeySet();
     private final Set<UUID> suppressedLeavePlayers = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean missingRoleWarningLogged = new AtomicBoolean(false);
 
@@ -117,6 +123,7 @@ public final class RoleGateManager {
             mcHost.shutdown();
         }
         restrictedPlayers.clear();
+        suppressedJoinPlayers.clear();
         suppressedLeavePlayers.clear();
     }
 
@@ -130,13 +137,22 @@ public final class RoleGateManager {
     }
 
     public void onPlayerJoin(ServerPlayer player) {
-        suppressedLeavePlayers.remove(player.getUUID());
+        UUID uuid = player.getUUID();
+        suppressedLeavePlayers.remove(uuid);
+        suppressedJoinPlayers.remove(uuid);
         evaluatePlayer(new MinecraftPlayerRef(player), true);
     }
 
     void onPlayerJoin(PlayerRef player) {
         suppressedLeavePlayers.remove(player.uuid());
+        suppressedJoinPlayers.remove(player.uuid());
         evaluatePlayer(player, true);
+    }
+
+    public void onPlayerLoggedInProcessed(UUID uuid) {
+        if (uuid != null && restrictedPlayers.contains(uuid) && modConfig.get().restrictions().suppressDiscordMessages()) {
+            suppressedJoinPlayers.add(uuid);
+        }
     }
 
     public void onPlayerRespawn(ServerPlayer oldPlayer, ServerPlayer newPlayer) {
@@ -161,6 +177,7 @@ public final class RoleGateManager {
     }
 
     void onPlayerDisconnect(UUID uuid) {
+        suppressedJoinPlayers.remove(uuid);
         boolean wasRestricted = restrictedPlayers.remove(uuid);
         if (wasRestricted && modConfig.get().restrictions().suppressDiscordMessages()) {
             suppressedLeavePlayers.add(uuid);
@@ -385,10 +402,14 @@ public final class RoleGateManager {
 
     private void markVerified(PlayerRef player) {
         boolean wasRestricted = restrictedPlayers.remove(player.uuid());
+        boolean hadSuppressedJoin = suppressedJoinPlayers.remove(player.uuid());
         if (wasRestricted) {
             logger.info("Verified {} ({}); lifting restrictions.", player.name(), player.uuid());
         }
         host.applyVerified(player, modConfig.get(), wasRestricted);
+        if (hadSuppressedJoin && modConfig.get().restrictions().suppressDiscordMessages()) {
+            host.announceDiscordJoin(player);
+        }
     }
 
     private record MinecraftPlayerRef(ServerPlayer player) implements PlayerRef {
@@ -569,6 +590,23 @@ public final class RoleGateManager {
         public void removeLuckPermsGroup(UUID uuid, String groupName) {
             if (luckPermsLoaded) {
                 LuckPermsHook.removePlayerFromGroup(uuid, groupName, logger);
+            }
+        }
+
+        @Override
+        public void announceDiscordJoin(PlayerRef playerRef) {
+            ServerPlayer player = ((MinecraftPlayerRef) playerRef).player();
+            MinecraftServer srv = this.server;
+            if (srv == null || player.hasDisconnected() || srv.getPlayerList().getPlayer(player.getUUID()) == null) {
+                return;
+            }
+            try {
+                ServerEvents.getInstance().playerJoinEvent(
+                        new CraterPlayerEvent.PlayerLoggedIn(BridgedPlayer.wrap(player))
+                );
+            } catch (Exception e) {
+                logger.warn("Failed to replay deferred SDLink join announcement for {} ({})",
+                        player.nameAndId().name(), player.getUUID(), e);
             }
         }
 
