@@ -29,22 +29,26 @@ class ModConfigTest {
         assertTrue(content.contains("[bossbar]"));
         assertTrue(content.contains("[restrictions]"));
         assertTrue(content.contains("[effects]"));
+        assertTrue(content.contains("[invisibility]"));
         assertTrue(content.contains("[luckperms]"));
         ModConfig.ConfigData data = config.get();
         assertEquals("", data.requiredRoleId());
         assertEquals("To interact with the server, please join our Discord!", data.bossbar().text());
         assertEquals(BossEvent.BossBarColor.RED, data.bossbar().color());
         assertEquals(BossEvent.BossBarOverlay.PROGRESS, data.bossbar().style());
+        assertEquals("&cYou cannot talk in chat! Join our Discord to get access.", data.messages().chatDenied());
         assertTrue(data.modal().enabled());
         assertTrue(data.restrictions().blockItemPickup());
+        assertTrue(data.restrictions().blockChat());
         assertTrue(data.effects().enabled());
         assertFalse(data.effects().showParticles());
         assertFalse(data.effects().showIcon());
-        assertEquals(2, data.effects().effects().size());
+        assertEquals(1, data.effects().effects().size());
         assertEquals("minecraft:saturation", data.effects().effects().get(0).effectId().toString());
         assertEquals(0, data.effects().effects().get(0).amplifier());
-        assertEquals("minecraft:invisibility", data.effects().effects().get(1).effectId().toString());
-        assertEquals(0, data.effects().effects().get(1).amplifier());
+        assertTrue(data.invisibility().enabled());
+        assertTrue(data.invisibility().hideNametag());
+        assertTrue(data.invisibility().hideFromPlayerList());
         assertTrue(data.luckPerms().enabled());
         assertEquals("unverified", data.luckPerms().unverifiedGroup());
     }
@@ -68,12 +72,18 @@ class ModConfigTest {
 
                 [restrictions]
                 blockItemPickup = false
+                blockChat = false
 
                 [effects]
                 enabled = true
                 showParticles = true
                 showIcon = true
                 list = ["speed:1", "minecraft:resistance:2", "INVALID ID!!"]
+
+                [invisibility]
+                enabled = true
+                hideNametag = false
+                hideFromPlayerList = false
 
                 [luckperms]
                 enabled = true
@@ -92,6 +102,7 @@ class ModConfigTest {
         assertEquals(BossEvent.BossBarOverlay.NOTCHED_10, data.bossbar().style());
         assertFalse(data.modal().enabled());
         assertFalse(data.restrictions().blockItemPickup());
+        assertFalse(data.restrictions().blockChat());
         assertTrue(data.effects().enabled());
         assertTrue(data.effects().showParticles());
         assertTrue(data.effects().showIcon());
@@ -100,8 +111,12 @@ class ModConfigTest {
         assertEquals(1, data.effects().effects().get(0).amplifier());
         assertEquals("minecraft:resistance", data.effects().effects().get(1).effectId().toString());
         assertEquals(2, data.effects().effects().get(1).amplifier());
+        assertTrue(data.invisibility().enabled());
+        assertFalse(data.invisibility().hideNametag());
+        assertFalse(data.invisibility().hideFromPlayerList());
         assertEquals("guest", data.luckPerms().unverifiedGroup());
         // Missing keys get filled in cleanly on reload.
         assertEquals("&cYou cannot break blocks! Join our Discord to get access.", data.messages().blockBreakDenied());
+        assertEquals("&cYou cannot talk in chat! Join our Discord to get access.", data.messages().chatDenied());
     }
 }

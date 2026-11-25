@@ -118,6 +118,12 @@ public final class ModConfig {
                     defaults.messages().interactionDenied(),
                     "Chat message sent whenever an unverified player tries to open a chest or interact with blocks/entities. Supports '&' codes and {invite}."
             );
+            String chatDenied = ensureString(
+                    fileConfig,
+                    "messages.chatDenied",
+                    defaults.messages().chatDenied(),
+                    "Chat message sent whenever an unverified player tries to talk in chat. Supports '&' codes and {invite}."
+            );
 
             boolean modalEnabled = ensureBoolean(
                     fileConfig,
@@ -156,6 +162,12 @@ public final class ModConfig {
                     defaults.restrictions().blockItemPickup(),
                     "When true (default), unverified players cannot pick up items (or arrows/tridents) from the ground."
             );
+            boolean blockChat = ensureBoolean(
+                    fileConfig,
+                    "restrictions.blockChat",
+                    defaults.restrictions().blockChat(),
+                    "When true (default), unverified players cannot talk in chat or chat commands (/me, /msg, etc.), while still reading incoming messages."
+            );
 
             boolean effectsEnabled = ensureBoolean(
                     fileConfig,
@@ -182,6 +194,25 @@ public final class ModConfig {
                     "Status effects granted while unverified. Format: \"minecraft:effect_id\" or \"minecraft:effect_id:amplifier\" (0 = level I)."
             );
 
+            boolean invisibilityEnabled = ensureBoolean(
+                    fileConfig,
+                    "invisibility.enabled",
+                    defaults.invisibility().enabled(),
+                    "Whether to apply invisibility (with no particles/icon) and player-hiding features to unverified players."
+            );
+            boolean hideNametag = ensureBoolean(
+                    fileConfig,
+                    "invisibility.hideNametag",
+                    defaults.invisibility().hideNametag(),
+                    "When invisibility.enabled is true, hides unverified players (and their nametags) from other players."
+            );
+            boolean hideFromPlayerList = ensureBoolean(
+                    fileConfig,
+                    "invisibility.hideFromPlayerList",
+                    defaults.invisibility().hideFromPlayerList(),
+                    "When invisibility.enabled is true, hides unverified players from the Tab player list."
+            );
+
             boolean lpEnabled = ensureBoolean(
                     fileConfig,
                     "luckperms.enabled",
@@ -205,10 +236,11 @@ public final class ModConfig {
                     requiredRoleId.trim(),
                     discordInviteLink.trim(),
                     new BossbarConfig(bossbarEnabled, bossbarId.trim(), bossbarText, bossbarColorRaw, bossbarStyleRaw, parsedColor, parsedStyle),
-                    new MessagesConfig(blockBreakDenied, blockPlaceDenied, interactionDenied),
+                    new MessagesConfig(blockBreakDenied, blockPlaceDenied, interactionDenied, chatDenied),
                     new ModalConfig(modalEnabled, modalTitle, modalBody, inviteButtonText, closeButtonText),
-                    new RestrictionsConfig(blockItemPickup),
+                    new RestrictionsConfig(blockItemPickup, blockChat),
                     new EffectsConfig(effectsEnabled, effectsShowParticles, effectsShowIcon, List.copyOf(rawEffects), parsedEffects),
+                    new InvisibilityConfig(invisibilityEnabled, hideNametag, hideFromPlayerList),
                     new LuckPermsConfig(lpEnabled, lpGroup.trim())
             );
         } catch (Exception e) {
@@ -348,15 +380,14 @@ public final class ModConfig {
             ModalConfig modal,
             RestrictionsConfig restrictions,
             EffectsConfig effects,
+            InvisibilityConfig invisibility,
             LuckPermsConfig luckPerms
     ) {
         private static final List<String> DEFAULT_EFFECT_NAMES = List.of(
-                "minecraft:saturation",
-                "minecraft:invisibility"
+                "minecraft:saturation"
         );
         private static final List<EffectSpec> DEFAULT_EFFECT_SPECS = List.of(
-                new EffectSpec(Identifier.parse("minecraft:saturation"), 0),
-                new EffectSpec(Identifier.parse("minecraft:invisibility"), 0)
+                new EffectSpec(Identifier.parse("minecraft:saturation"), 0)
         );
 
         public static ConfigData defaults() {
@@ -375,7 +406,8 @@ public final class ModConfig {
                     new MessagesConfig(
                             "&cYou cannot break blocks! Join our Discord to get access.",
                             "&cYou cannot place blocks! Join our Discord to get access.",
-                            "&cYou cannot interact with this! Join our Discord to get access."
+                            "&cYou cannot interact with this! Join our Discord to get access.",
+                            "&cYou cannot talk in chat! Join our Discord to get access."
                     ),
                     new ModalConfig(
                             true,
@@ -384,8 +416,9 @@ public final class ModConfig {
                             "Join Discord",
                             "Close"
                     ),
-                    new RestrictionsConfig(true),
+                    new RestrictionsConfig(true, true),
                     new EffectsConfig(true, false, false, DEFAULT_EFFECT_NAMES, DEFAULT_EFFECT_SPECS),
+                    new InvisibilityConfig(true, true, true),
                     new LuckPermsConfig(true, "unverified")
             );
         }
@@ -405,7 +438,8 @@ public final class ModConfig {
     public record MessagesConfig(
             String blockBreakDenied,
             String blockPlaceDenied,
-            String interactionDenied
+            String interactionDenied,
+            String chatDenied
     ) {
     }
 
@@ -419,7 +453,8 @@ public final class ModConfig {
     }
 
     public record RestrictionsConfig(
-            boolean blockItemPickup
+            boolean blockItemPickup,
+            boolean blockChat
     ) {
     }
 
@@ -435,6 +470,13 @@ public final class ModConfig {
             boolean showIcon,
             List<String> rawEffects,
             List<EffectSpec> effects
+    ) {
+    }
+
+    public record InvisibilityConfig(
+            boolean enabled,
+            boolean hideNametag,
+            boolean hideFromPlayerList
     ) {
     }
 

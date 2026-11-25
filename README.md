@@ -28,7 +28,9 @@ A server-side **Fabric mod for Minecraft 26.3** that prevents players from break
 - **Unverified Player Restrictions**:
   - Sets unverified players to **Adventure** mode.
   - Cancels block breaking, block placing, chest/container/block interactions, entity interactions, placeable/world-modifying item usage, and (configurable, enabled by default) item/arrow pickup.
-  - Optionally grants configurable status effects while unverified (`minecraft:saturation` and `minecraft:invisibility` with no particles by default), removed automatically when verified.
+  - Blocks unverified players from speaking in chat or chat commands (`/me`, `/msg`, `/tell`, `/w`, `/teammsg`, plus Discord chat relay) while still allowing them to read incoming messages (`restrictions.blockChat`, enabled by default).
+  - Optionally grants configurable status effects while unverified (`minecraft:saturation` with no particles by default), removed automatically when verified (`[effects]`).
+  - Dedicated `[invisibility]` stealth mode (enabled by default): applies `minecraft:invisibility` (no particles/icon), hides unverified players and their nametags from other players (`hideNametag`), and hides them from the Tab player list (`hideFromPlayerList`) while turned on.
   - Sends configurable chat messages every time an unverified player attempts a restricted action.
 - **Bossbar & Native 26.3 Login Modal**:
   - Shows a customizable bossbar (text, color, style, ID, enabled toggle).
@@ -58,6 +60,7 @@ style = "SOLID"
 blockBreakDenied = "&cYou cannot break blocks! Join our Discord to get access."
 blockPlaceDenied = "&cYou cannot place blocks! Join our Discord to get access."
 interactionDenied = "&cYou cannot interact with this! Join our Discord to get access."
+chatDenied = "&cYou cannot talk in chat! Join our Discord to get access."
 
 [modal]
 enabled = true
@@ -68,12 +71,18 @@ closeButtonText = "Close"
 
 [restrictions]
 blockItemPickup = true
+blockChat = true
 
 [effects]
 enabled = true
 showParticles = false
 showIcon = false
-list = ["minecraft:saturation", "minecraft:invisibility"]
+list = ["minecraft:saturation"]
+
+[invisibility]
+enabled = true
+hideNametag = true
+hideFromPlayerList = true
 
 [luckperms]
 enabled = true

@@ -13,9 +13,12 @@ import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.player.Player;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.UUID;
 
 /**
  * Dedicated server entry point for Simple Discord Link Role Gate.
@@ -29,6 +32,28 @@ public final class SDLinkRoleGateMod implements DedicatedServerModInitializer {
     public static boolean shouldBlockItemPickup(Player player) {
         RoleGateManager manager = activeManager;
         return manager != null && manager.shouldBlockItemPickup(player);
+    }
+
+    public static boolean shouldBlockChat(Player player) {
+        RoleGateManager manager = activeManager;
+        return manager != null && manager.shouldBlockChat(player);
+    }
+
+    public static void sendChatDeniedMessage(ServerPlayer player) {
+        RoleGateManager manager = activeManager;
+        if (manager != null && player != null && !player.hasDisconnected()) {
+            manager.sendChatDeniedMessage(player);
+        }
+    }
+
+    public static boolean shouldHideFromPlayerList(UUID uuid) {
+        RoleGateManager manager = activeManager;
+        return manager != null && manager.shouldHideFromPlayerList(uuid);
+    }
+
+    public static boolean shouldHideEntityFrom(ServerPlayer target, ServerPlayer observer) {
+        RoleGateManager manager = activeManager;
+        return manager != null && manager.shouldHideEntityFrom(target, observer);
     }
 
     @Override

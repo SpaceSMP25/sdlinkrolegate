@@ -5,7 +5,10 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "ItemEntityMixin",
-    "AbstractArrowMixin"
+    "AbstractArrowMixin",
+    "ServerPlayerMixin",
+    "ClientboundPlayerInfoUpdatePacketMixin",
+    "ServerGamePacketListenerImplMixin"
   ],
   "injectors": {
     "defaultRequire": 1

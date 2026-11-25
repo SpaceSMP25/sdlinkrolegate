@@ -10,6 +10,7 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.core.Holder;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.game.ClientboundPlayerInfoUpdatePacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerBossEvent;
@@ -18,6 +19,7 @@ import net.minecraft.server.permissions.Permissions;
 import net.minecraft.world.BossEvent;
 import net.minecraft.world.effect.MobEffect;
 import net.minecraft.world.effect.MobEffectInstance;
+import net.minecraft.world.effect.MobEffects;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
 import org.slf4j.Logger;
@@ -136,7 +138,7 @@ public final class RoleGateManager {
     public void onPlayerRespawn(ServerPlayer oldPlayer, ServerPlayer newPlayer) {
         if (host instanceof MinecraftGateHost mcHost) {
             mcHost.removeBossbarFrom(oldPlayer);
-            mcHost.forgetGrantedEffects(oldPlayer.getUUID());
+            mcHost.forgetGrantedState(oldPlayer.getUUID());
         }
         if (isOperator(newPlayer)) {
             markVerified(new MinecraftPlayerRef(newPlayer));
@@ -228,6 +230,42 @@ public final class RoleGateManager {
 
     public boolean shouldBlockItemPickup(Player player) {
         return modConfig.get().restrictions().blockItemPickup() && isRestricted(player);
+    }
+
+    public boolean shouldBlockChat(Player player) {
+        return modConfig.get().restrictions().blockChat() && isRestricted(player);
+    }
+
+    boolean shouldBlockChat(UUID uuid) {
+        return modConfig.get().restrictions().blockChat() && isRestricted(uuid);
+    }
+
+    public void sendChatDeniedMessage(ServerPlayer player) {
+        if (player == null) {
+            return;
+        }
+        ModConfig.ConfigData config = modConfig.get();
+        player.sendSystemMessage(TextUtil.format(config.messages().chatDenied(), config.discordInviteLink()));
+    }
+
+    public boolean shouldHideFromPlayerList(UUID uuid) {
+        ModConfig.InvisibilityConfig invisibility = modConfig.get().invisibility();
+        return invisibility.enabled() && invisibility.hideFromPlayerList() && isRestricted(uuid);
+    }
+
+    public boolean shouldHideEntityFrom(ServerPlayer target, ServerPlayer observer) {
+        if (target == null || observer == null) {
+            return false;
+        }
+        return isRestricted(target) && shouldHideEntity(target.getUUID(), observer.getUUID());
+    }
+
+    boolean shouldHideEntity(UUID targetUuid, UUID observerUuid) {
+        if (targetUuid == null || observerUuid == null || targetUuid.equals(observerUuid)) {
+            return false;
+        }
+        ModConfig.InvisibilityConfig invisibility = modConfig.get().invisibility();
+        return invisibility.enabled() && invisibility.hideNametag() && isRestricted(targetUuid);
     }
 
     public boolean isOperator(ServerPlayer player) {
@@ -355,6 +393,8 @@ public final class RoleGateManager {
         private final Logger logger;
         private final boolean luckPermsLoaded;
         private final Map<UUID, Set<Holder<MobEffect>>> grantedEffects = new ConcurrentHashMap<>();
+        private final Set<UUID> grantedInvisibility = ConcurrentHashMap.newKeySet();
+        private final Set<UUID> hiddenInPlayerList = ConcurrentHashMap.newKeySet();
         private final Set<Identifier> warnedUnknownEffects = ConcurrentHashMap.newKeySet();
 
         private volatile MinecraftServer server;
@@ -378,9 +418,12 @@ public final class RoleGateManager {
             if (srv != null) {
                 for (ServerPlayer player : srv.getPlayerList().getPlayers()) {
                     clearGrantedEffects(player);
+                    clearGrantedInvisibility(player);
                 }
             }
             grantedEffects.clear();
+            grantedInvisibility.clear();
+            hiddenInPlayerList.clear();
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
                 bar.removeAllPlayers();
@@ -395,13 +438,16 @@ public final class RoleGateManager {
             }
         }
 
-        private void forgetGrantedEffects(UUID uuid) {
+        private void forgetGrantedState(UUID uuid) {
             grantedEffects.remove(uuid);
+            grantedInvisibility.remove(uuid);
         }
 
         private void cleanupDisconnected(ServerPlayer player) {
             removeBossbarFrom(player);
             clearGrantedEffects(player);
+            clearGrantedInvisibility(player);
+            hiddenInPlayerList.remove(player.getUUID());
         }
 
         @Override
@@ -452,6 +498,7 @@ public final class RoleGateManager {
             }
 
             syncRestrictedEffects(player, config.effects());
+            syncStealth(player, config.invisibility(), true);
 
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
@@ -480,8 +527,10 @@ public final class RoleGateManager {
             }
 
             clearGrantedEffects(player);
+            syncStealth(player, config.invisibility(), false);
             if (wasRestricted || (!playerRef.isOperator() && player.gameMode() == GameType.ADVENTURE)) {
                 removeConfiguredInfiniteEffects(player, config.effects());
+                removeInfiniteInvisibility(player);
                 if (player.gameMode() != GameType.SURVIVAL) {
                     player.setGameMode(GameType.SURVIVAL);
                 }
@@ -597,6 +646,65 @@ public final class RoleGateManager {
                         player.removeEffect(holder);
                     }
                 });
+            }
+        }
+
+        private void syncStealth(ServerPlayer player, ModConfig.InvisibilityConfig invisConfig, boolean restricted) {
+            UUID uuid = player.getUUID();
+            boolean shouldBeInvisible = restricted && invisConfig.enabled();
+            if (shouldBeInvisible) {
+                MobEffectInstance current = player.getEffect(MobEffects.INVISIBILITY);
+                if (current == null
+                        || !current.isInfiniteDuration()
+                        || current.getAmplifier() != 0
+                        || current.isVisible()
+                        || current.showIcon()) {
+                    player.addEffect(new MobEffectInstance(
+                            MobEffects.INVISIBILITY,
+                            MobEffectInstance.INFINITE_DURATION,
+                            0,
+                            false,
+                            false,
+                            false
+                    ));
+                }
+                grantedInvisibility.add(uuid);
+            } else {
+                clearGrantedInvisibility(player);
+            }
+
+            boolean shouldHideListed = restricted && invisConfig.enabled() && invisConfig.hideFromPlayerList();
+            boolean currentlyHidden = hiddenInPlayerList.contains(uuid);
+            if (shouldHideListed != currentlyHidden) {
+                if (shouldHideListed) {
+                    hiddenInPlayerList.add(uuid);
+                } else {
+                    hiddenInPlayerList.remove(uuid);
+                }
+                MinecraftServer srv = this.server;
+                if (srv != null && srv.getPlayerList().getPlayer(uuid) != null) {
+                    srv.getPlayerList().broadcastAll(new ClientboundPlayerInfoUpdatePacket(
+                            ClientboundPlayerInfoUpdatePacket.Action.UPDATE_LISTED,
+                            player
+                    ));
+                }
+            }
+        }
+
+        private void clearGrantedInvisibility(ServerPlayer player) {
+            UUID uuid = player.getUUID();
+            if (grantedInvisibility.remove(uuid)) {
+                Set<Holder<MobEffect>> activeEffects = grantedEffects.get(uuid);
+                if (activeEffects == null || !activeEffects.contains(MobEffects.INVISIBILITY)) {
+                    player.removeEffect(MobEffects.INVISIBILITY);
+                }
+            }
+        }
+
+        private void removeInfiniteInvisibility(ServerPlayer player) {
+            MobEffectInstance existing = player.getEffect(MobEffects.INVISIBILITY);
+            if (existing != null && existing.isInfiniteDuration()) {
+                player.removeEffect(MobEffects.INVISIBILITY);
             }
         }
     }

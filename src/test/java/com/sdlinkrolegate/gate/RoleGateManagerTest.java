@@ -179,31 +179,110 @@ class RoleGateManagerTest {
     void reloadUpdatesEffectsAndPickupConfigSnapshot() throws Exception {
         ModConfig.ConfigData initial = modConfig.get();
         assertTrue(initial.restrictions().blockItemPickup());
+        assertTrue(initial.restrictions().blockChat());
         assertTrue(initial.effects().enabled());
         assertFalse(initial.effects().showParticles());
-        assertEquals(2, initial.effects().effects().size());
+        assertEquals(1, initial.effects().effects().size());
+        assertEquals("minecraft:saturation", initial.effects().effects().get(0).effectId().toString());
+        assertTrue(initial.invisibility().enabled());
+        assertTrue(initial.invisibility().hideNametag());
+        assertTrue(initial.invisibility().hideFromPlayerList());
 
         Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
                 requiredRoleId = "999888777"
 
                 [restrictions]
                 blockItemPickup = false
+                blockChat = false
 
                 [effects]
                 enabled = false
                 showParticles = true
                 list = ["minecraft:slowness:1"]
+
+                [invisibility]
+                enabled = false
+                hideNametag = false
+                hideFromPlayerList = false
                 """);
 
         manager.reload();
 
         ModConfig.ConfigData reloaded = modConfig.get();
         assertFalse(reloaded.restrictions().blockItemPickup());
+        assertFalse(reloaded.restrictions().blockChat());
         assertFalse(reloaded.effects().enabled());
         assertTrue(reloaded.effects().showParticles());
         assertEquals(1, reloaded.effects().effects().size());
         assertEquals("minecraft:slowness", reloaded.effects().effects().get(0).effectId().toString());
         assertEquals(1, reloaded.effects().effects().get(0).amplifier());
+        assertFalse(reloaded.invisibility().enabled());
+        assertFalse(reloaded.invisibility().hideNametag());
+        assertFalse(reloaded.invisibility().hideFromPlayerList());
+    }
+
+    @Test
+    void unverifiedStealthAndChatRestrictionsRespectConfigToggles() throws Exception {
+        UUID targetUuid = UUID.randomUUID();
+        UUID observerUuid = UUID.randomUUID();
+        TestPlayer player = new TestPlayer(targetUuid, "StealthPlayer", false, false);
+        host.onlinePlayers.put(targetUuid, player);
+
+        manager.onPlayerJoin(player);
+
+        assertTrue(manager.isRestricted(targetUuid));
+        assertTrue(manager.shouldBlockChat(targetUuid));
+        assertTrue(manager.shouldHideFromPlayerList(targetUuid));
+        assertTrue(manager.shouldHideEntity(targetUuid, observerUuid));
+        assertFalse(manager.shouldHideEntity(targetUuid, targetUuid));
+
+        // Disabling invisibility turns off nametag & playerlist hiding even if individual flags are true.
+        Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
+                requiredRoleId = "999888777"
+
+                [restrictions]
+                blockChat = false
+
+                [invisibility]
+                enabled = false
+                hideNametag = true
+                hideFromPlayerList = true
+                """);
+        manager.reload();
+
+        assertTrue(manager.isRestricted(targetUuid));
+        assertFalse(manager.shouldBlockChat(targetUuid));
+        assertFalse(manager.shouldHideFromPlayerList(targetUuid));
+        assertFalse(manager.shouldHideEntity(targetUuid, observerUuid));
+
+        // Enabling invisibility again respects individual hideNametag / hideFromPlayerList flags.
+        Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
+                requiredRoleId = "999888777"
+
+                [restrictions]
+                blockChat = true
+
+                [invisibility]
+                enabled = true
+                hideNametag = false
+                hideFromPlayerList = true
+                """);
+        manager.reload();
+
+        assertTrue(manager.shouldBlockChat(targetUuid));
+        assertTrue(manager.shouldHideFromPlayerList(targetUuid));
+        assertFalse(manager.shouldHideEntity(targetUuid, observerUuid));
+
+        // Verifying lifts all stealth & chat restrictions.
+        roleLookup.linkedIds.put(targetUuid, "discord-stealth");
+        roleLookup.membersWithRole.put("discord-stealth", true);
+        manager.onPlayerVerificationChanged(targetUuid);
+        host.drainTasks();
+
+        assertFalse(manager.isRestricted(targetUuid));
+        assertFalse(manager.shouldBlockChat(targetUuid));
+        assertFalse(manager.shouldHideFromPlayerList(targetUuid));
+        assertFalse(manager.shouldHideEntity(targetUuid, observerUuid));
     }
 
     private record TestPlayer(UUID uuid, String name, boolean isDisconnected, boolean isOperator)

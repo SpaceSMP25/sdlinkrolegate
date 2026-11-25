@@ -7,7 +7,9 @@ import net.fabricmc.fabric.api.event.player.PlayerBlockBreakEvents;
 import net.fabricmc.fabric.api.event.player.UseBlockCallback;
 import net.fabricmc.fabric.api.event.player.UseEntityCallback;
 import net.fabricmc.fabric.api.event.player.UseItemCallback;
+import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.minecraft.core.BlockPos;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -111,6 +113,22 @@ public final class InteractionProtectionHandler {
                 return InteractionResult.FAIL;
             }
             return InteractionResult.PASS;
+        });
+
+        ServerMessageEvents.ALLOW_CHAT_MESSAGE.register((message, sender, params) -> {
+            if (!roleGateManager.shouldBlockChat(sender)) {
+                return true;
+            }
+            sendDeniedMessage(sender, modConfig.get().messages().chatDenied());
+            return false;
+        });
+
+        ServerMessageEvents.ALLOW_COMMAND_MESSAGE.register((message, source, params) -> {
+            if (!(source.getPlayer() instanceof ServerPlayer sender) || !roleGateManager.shouldBlockChat(sender)) {
+                return true;
+            }
+            sendDeniedMessage(sender, modConfig.get().messages().chatDenied());
+            return false;
         });
     }
 
