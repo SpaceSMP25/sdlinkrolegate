@@ -40,6 +40,7 @@ class ModConfigTest {
         assertTrue(data.modal().enabled());
         assertTrue(data.restrictions().blockItemPickup());
         assertTrue(data.restrictions().blockChat());
+        assertTrue(data.restrictions().suppressDiscordMessages());
         assertTrue(data.effects().enabled());
         assertFalse(data.effects().showParticles());
         assertFalse(data.effects().showIcon());
@@ -73,6 +74,7 @@ class ModConfigTest {
                 [restrictions]
                 blockItemPickup = false
                 blockChat = false
+                suppressDiscordMessages = false
 
                 [effects]
                 enabled = true
@@ -103,6 +105,7 @@ class ModConfigTest {
         assertFalse(data.modal().enabled());
         assertFalse(data.restrictions().blockItemPickup());
         assertFalse(data.restrictions().blockChat());
+        assertFalse(data.restrictions().suppressDiscordMessages());
         assertTrue(data.effects().enabled());
         assertTrue(data.effects().showParticles());
         assertTrue(data.effects().showIcon());

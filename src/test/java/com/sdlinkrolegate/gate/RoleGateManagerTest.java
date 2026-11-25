@@ -180,6 +180,7 @@ class RoleGateManagerTest {
         ModConfig.ConfigData initial = modConfig.get();
         assertTrue(initial.restrictions().blockItemPickup());
         assertTrue(initial.restrictions().blockChat());
+        assertTrue(initial.restrictions().suppressDiscordMessages());
         assertTrue(initial.effects().enabled());
         assertFalse(initial.effects().showParticles());
         assertEquals(1, initial.effects().effects().size());
@@ -194,6 +195,7 @@ class RoleGateManagerTest {
                 [restrictions]
                 blockItemPickup = false
                 blockChat = false
+                suppressDiscordMessages = false
 
                 [effects]
                 enabled = false
@@ -211,6 +213,7 @@ class RoleGateManagerTest {
         ModConfig.ConfigData reloaded = modConfig.get();
         assertFalse(reloaded.restrictions().blockItemPickup());
         assertFalse(reloaded.restrictions().blockChat());
+        assertFalse(reloaded.restrictions().suppressDiscordMessages());
         assertFalse(reloaded.effects().enabled());
         assertTrue(reloaded.effects().showParticles());
         assertEquals(1, reloaded.effects().effects().size());
@@ -283,6 +286,54 @@ class RoleGateManagerTest {
         assertFalse(manager.shouldBlockChat(targetUuid));
         assertFalse(manager.shouldHideFromPlayerList(targetUuid));
         assertFalse(manager.shouldHideEntity(targetUuid, observerUuid));
+    }
+
+    @Test
+    void suppressesDiscordMessagesAcrossJoinDisconnectAndVerifyLifecycle() throws Exception {
+        UUID uuid = UUID.randomUUID();
+        TestPlayer player = new TestPlayer(uuid, "DiscordQuietUser", false, false);
+        host.onlinePlayers.put(uuid, player);
+
+        // Unverified join immediately marks player for Discord suppression before LoggedIn event fires.
+        manager.onPlayerJoin(player);
+        assertTrue(manager.shouldSuppressDiscordMessages(uuid));
+
+        // Fabric DISCONNECT runs before CraterLib PlayerLoggedOut: keep suppressing until PlayerLoggedOut completes.
+        manager.onPlayerDisconnect(uuid);
+        assertFalse(manager.isRestricted(uuid));
+        assertTrue(manager.shouldSuppressDiscordMessages(uuid));
+
+        manager.onPlayerLoggedOutComplete(uuid);
+        assertFalse(manager.shouldSuppressDiscordMessages(uuid));
+
+        // Rejoins unverified, then disables suppression via config toggle, then re-enables and verifies.
+        manager.onPlayerJoin(player);
+        assertTrue(manager.shouldSuppressDiscordMessages(uuid));
+
+        Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
+                requiredRoleId = "999888777"
+
+                [restrictions]
+                suppressDiscordMessages = false
+                """);
+        manager.reload();
+        assertFalse(manager.shouldSuppressDiscordMessages(uuid));
+
+        Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
+                requiredRoleId = "999888777"
+
+                [restrictions]
+                suppressDiscordMessages = true
+                """);
+        manager.reload();
+        assertTrue(manager.shouldSuppressDiscordMessages(uuid));
+
+        roleLookup.linkedIds.put(uuid, "discord-verified");
+        roleLookup.membersWithRole.put("discord-verified", true);
+        manager.onPlayerVerificationChanged(uuid);
+        host.drainTasks();
+
+        assertFalse(manager.shouldSuppressDiscordMessages(uuid));
     }
 
     private record TestPlayer(UUID uuid, String name, boolean isDisconnected, boolean isOperator)

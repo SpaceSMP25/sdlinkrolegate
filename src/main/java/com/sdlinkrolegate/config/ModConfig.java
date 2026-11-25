@@ -168,6 +168,12 @@ public final class ModConfig {
                     defaults.restrictions().blockChat(),
                     "When true (default), unverified players cannot talk in chat or chat commands (/me, /msg, etc.), while still reading incoming messages."
             );
+            boolean suppressDiscordMessages = ensureBoolean(
+                    fileConfig,
+                    "restrictions.suppressDiscordMessages",
+                    defaults.restrictions().suppressDiscordMessages(),
+                    "When true (default), hides unverified players from SDLink Discord notifications (join/leave/death/advancement) and Discord player lists."
+            );
 
             boolean effectsEnabled = ensureBoolean(
                     fileConfig,
@@ -238,7 +244,7 @@ public final class ModConfig {
                     new BossbarConfig(bossbarEnabled, bossbarId.trim(), bossbarText, bossbarColorRaw, bossbarStyleRaw, parsedColor, parsedStyle),
                     new MessagesConfig(blockBreakDenied, blockPlaceDenied, interactionDenied, chatDenied),
                     new ModalConfig(modalEnabled, modalTitle, modalBody, inviteButtonText, closeButtonText),
-                    new RestrictionsConfig(blockItemPickup, blockChat),
+                    new RestrictionsConfig(blockItemPickup, blockChat, suppressDiscordMessages),
                     new EffectsConfig(effectsEnabled, effectsShowParticles, effectsShowIcon, List.copyOf(rawEffects), parsedEffects),
                     new InvisibilityConfig(invisibilityEnabled, hideNametag, hideFromPlayerList),
                     new LuckPermsConfig(lpEnabled, lpGroup.trim())
@@ -416,7 +422,7 @@ public final class ModConfig {
                             "Join Discord",
                             "Close"
                     ),
-                    new RestrictionsConfig(true, true),
+                    new RestrictionsConfig(true, true, true),
                     new EffectsConfig(true, false, false, DEFAULT_EFFECT_NAMES, DEFAULT_EFFECT_SPECS),
                     new InvisibilityConfig(true, true, true),
                     new LuckPermsConfig(true, "unverified")
@@ -454,7 +460,8 @@ public final class ModConfig {
 
     public record RestrictionsConfig(
             boolean blockItemPickup,
-            boolean blockChat
+            boolean blockChat,
+            boolean suppressDiscordMessages
     ) {
     }
 

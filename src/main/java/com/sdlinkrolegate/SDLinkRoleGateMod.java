@@ -56,6 +56,11 @@ public final class SDLinkRoleGateMod implements DedicatedServerModInitializer {
         return manager != null && manager.shouldHideEntityFrom(target, observer);
     }
 
+    public static boolean shouldSuppressDiscordMessages(UUID uuid) {
+        RoleGateManager manager = activeManager;
+        return manager != null && manager.shouldSuppressDiscordMessages(uuid);
+    }
+
     @Override
     public void onInitializeServer() {
         ModConfig modConfig = new ModConfig(FabricLoader.getInstance().getConfigDir(), LOGGER);

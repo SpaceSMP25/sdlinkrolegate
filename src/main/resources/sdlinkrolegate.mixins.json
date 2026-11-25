@@ -8,7 +8,8 @@
     "AbstractArrowMixin",
     "ServerPlayerMixin",
     "ClientboundPlayerInfoUpdatePacketMixin",
-    "ServerGamePacketListenerImplMixin"
+    "ServerGamePacketListenerImplMixin",
+    "SDLinkMCPlatformMixin"
   ],
   "injectors": {
     "defaultRequire": 1

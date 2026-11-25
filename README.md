@@ -29,6 +29,7 @@ A server-side **Fabric mod for Minecraft 26.3** that prevents players from break
   - Sets unverified players to **Adventure** mode.
   - Cancels block breaking, block placing, chest/container/block interactions, entity interactions, placeable/world-modifying item usage, and (configurable, enabled by default) item/arrow pickup.
   - Blocks unverified players from speaking in chat or chat commands (`/me`, `/msg`, `/tell`, `/w`, `/teammsg`, plus Discord chat relay) while still allowing them to read incoming messages (`restrictions.blockChat`, enabled by default).
+  - Hides unverified players from SDLink Discord notifications (join/leave/death/advancement messages) and Discord player lists (`restrictions.suppressDiscordMessages`, enabled by default).
   - Optionally grants configurable status effects while unverified (`minecraft:saturation` with no particles by default), removed automatically when verified (`[effects]`).
   - Dedicated `[invisibility]` stealth mode (enabled by default): applies `minecraft:invisibility` (no particles/icon), hides unverified players and their nametags from other players (`hideNametag`), and hides them from the Tab player list (`hideFromPlayerList`) while turned on.
   - Sends configurable chat messages every time an unverified player attempts a restricted action.
@@ -72,6 +73,7 @@ closeButtonText = "Close"
 [restrictions]
 blockItemPickup = true
 blockChat = true
+suppressDiscordMessages = true
 
 [effects]
 enabled = true

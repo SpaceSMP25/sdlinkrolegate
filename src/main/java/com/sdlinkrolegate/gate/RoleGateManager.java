@@ -78,6 +78,7 @@ public final class RoleGateManager {
     private final Logger logger;
 
     private final Set<UUID> restrictedPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> suppressedLeavePlayers = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean missingRoleWarningLogged = new AtomicBoolean(false);
 
     public RoleGateManager(ModConfig modConfig, SDLinkRoleChecker roleChecker, Logger logger) {
@@ -116,6 +117,7 @@ public final class RoleGateManager {
             mcHost.shutdown();
         }
         restrictedPlayers.clear();
+        suppressedLeavePlayers.clear();
     }
 
     public void onBotReady() {
@@ -128,10 +130,12 @@ public final class RoleGateManager {
     }
 
     public void onPlayerJoin(ServerPlayer player) {
+        suppressedLeavePlayers.remove(player.getUUID());
         evaluatePlayer(new MinecraftPlayerRef(player), true);
     }
 
     void onPlayerJoin(PlayerRef player) {
+        suppressedLeavePlayers.remove(player.uuid());
         evaluatePlayer(player, true);
     }
 
@@ -150,9 +154,22 @@ public final class RoleGateManager {
     }
 
     public void onPlayerDisconnect(ServerPlayer player) {
-        restrictedPlayers.remove(player.getUUID());
+        onPlayerDisconnect(player.getUUID());
         if (host instanceof MinecraftGateHost mcHost) {
             mcHost.cleanupDisconnected(player);
+        }
+    }
+
+    void onPlayerDisconnect(UUID uuid) {
+        boolean wasRestricted = restrictedPlayers.remove(uuid);
+        if (wasRestricted && modConfig.get().restrictions().suppressDiscordMessages()) {
+            suppressedLeavePlayers.add(uuid);
+        }
+    }
+
+    public void onPlayerLoggedOutComplete(UUID uuid) {
+        if (uuid != null) {
+            suppressedLeavePlayers.remove(uuid);
         }
     }
 
@@ -238,6 +255,13 @@ public final class RoleGateManager {
 
     boolean shouldBlockChat(UUID uuid) {
         return modConfig.get().restrictions().blockChat() && isRestricted(uuid);
+    }
+
+    public boolean shouldSuppressDiscordMessages(UUID uuid) {
+        if (uuid == null || !modConfig.get().restrictions().suppressDiscordMessages()) {
+            return false;
+        }
+        return restrictedPlayers.contains(uuid) || suppressedLeavePlayers.contains(uuid);
     }
 
     public void sendChatDeniedMessage(ServerPlayer player) {
