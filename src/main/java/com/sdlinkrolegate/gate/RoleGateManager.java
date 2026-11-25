@@ -7,18 +7,25 @@ import com.sdlinkrolegate.discord.RoleLookup;
 import com.sdlinkrolegate.discord.SDLinkRoleChecker;
 import com.sdlinkrolegate.util.TextUtil;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.core.Holder;
+import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
+import net.minecraft.resources.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerBossEvent;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 import net.minecraft.world.BossEvent;
+import net.minecraft.world.effect.MobEffect;
+import net.minecraft.world.effect.MobEffectInstance;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.GameType;
 import org.slf4j.Logger;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collection;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
@@ -26,8 +33,8 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Coordinates role verification, Adventure mode enforcement, bossbar display,
- * login modals, and optional LuckPerms group updates.
+ * Coordinates role verification, Adventure mode enforcement, item pickup blocking,
+ * status effects, bossbar display, login modals, and optional LuckPerms group updates.
  */
 public final class RoleGateManager {
 
@@ -129,6 +136,7 @@ public final class RoleGateManager {
     public void onPlayerRespawn(ServerPlayer oldPlayer, ServerPlayer newPlayer) {
         if (host instanceof MinecraftGateHost mcHost) {
             mcHost.removeBossbarFrom(oldPlayer);
+            mcHost.forgetGrantedEffects(oldPlayer.getUUID());
         }
         if (isOperator(newPlayer)) {
             markVerified(new MinecraftPlayerRef(newPlayer));
@@ -142,7 +150,7 @@ public final class RoleGateManager {
     public void onPlayerDisconnect(ServerPlayer player) {
         restrictedPlayers.remove(player.getUUID());
         if (host instanceof MinecraftGateHost mcHost) {
-            mcHost.removeBossbarFrom(player);
+            mcHost.cleanupDisconnected(player);
         }
     }
 
@@ -178,7 +186,7 @@ public final class RoleGateManager {
     }
 
     /**
-     * Reloads configuration from disk, updates bossbar styling, and re-evaluates all online players.
+     * Reloads configuration from disk, updates bossbar/effects styling, and re-evaluates all online players.
      */
     public synchronized void reload() {
         ModConfig.ConfigData previousConfig = modConfig.get();
@@ -216,6 +224,10 @@ public final class RoleGateManager {
 
     public boolean isRestricted(UUID uuid) {
         return uuid != null && restrictedPlayers.contains(uuid);
+    }
+
+    public boolean shouldBlockItemPickup(Player player) {
+        return modConfig.get().restrictions().blockItemPickup() && isRestricted(player);
     }
 
     public boolean isOperator(ServerPlayer player) {
@@ -342,6 +354,9 @@ public final class RoleGateManager {
     private static final class MinecraftGateHost implements GateHost {
         private final Logger logger;
         private final boolean luckPermsLoaded;
+        private final Map<UUID, Set<Holder<MobEffect>>> grantedEffects = new ConcurrentHashMap<>();
+        private final Set<Identifier> warnedUnknownEffects = ConcurrentHashMap.newKeySet();
+
         private volatile MinecraftServer server;
         private volatile ServerBossEvent bossBar;
         private volatile String activeBossbarId = "";
@@ -359,6 +374,13 @@ public final class RoleGateManager {
         }
 
         private void shutdown() {
+            MinecraftServer srv = this.server;
+            if (srv != null) {
+                for (ServerPlayer player : srv.getPlayerList().getPlayers()) {
+                    clearGrantedEffects(player);
+                }
+            }
+            grantedEffects.clear();
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
                 bar.removeAllPlayers();
@@ -371,6 +393,15 @@ public final class RoleGateManager {
             if (bar != null) {
                 bar.removePlayer(player);
             }
+        }
+
+        private void forgetGrantedEffects(UUID uuid) {
+            grantedEffects.remove(uuid);
+        }
+
+        private void cleanupDisconnected(ServerPlayer player) {
+            removeBossbarFrom(player);
+            clearGrantedEffects(player);
         }
 
         @Override
@@ -420,6 +451,8 @@ public final class RoleGateManager {
                 player.setGameMode(GameType.ADVENTURE);
             }
 
+            syncRestrictedEffects(player, config.effects());
+
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
                 if (config.bossbar().enabled()) {
@@ -446,7 +479,9 @@ public final class RoleGateManager {
                 bar.removePlayer(player);
             }
 
+            clearGrantedEffects(player);
             if (wasRestricted || (!playerRef.isOperator() && player.gameMode() == GameType.ADVENTURE)) {
+                removeConfiguredInfiniteEffects(player, config.effects());
                 if (player.gameMode() != GameType.SURVIVAL) {
                     player.setGameMode(GameType.SURVIVAL);
                 }
@@ -466,6 +501,7 @@ public final class RoleGateManager {
 
         @Override
         public void onConfigUpdated(ModConfig.ConfigData config) {
+            warnedUnknownEffects.clear();
             ModConfig.BossbarConfig bb = config.bossbar();
             String desiredId = (bb.id() == null || bb.id().isBlank()) ? "sdlinkrolegate:unverified" : bb.id();
             Component title = TextUtil.format(bb.text(), config.discordInviteLink());
@@ -490,6 +526,77 @@ public final class RoleGateManager {
                 if (!bb.enabled()) {
                     existing.removeAllPlayers();
                 }
+            }
+        }
+
+        private void syncRestrictedEffects(ServerPlayer player, ModConfig.EffectsConfig effectsConfig) {
+            if (!effectsConfig.enabled()) {
+                clearGrantedEffects(player);
+                return;
+            }
+
+            Map<Holder<MobEffect>, Integer> desired = new LinkedHashMap<>();
+            for (ModConfig.EffectSpec spec : effectsConfig.effects()) {
+                Optional<Holder.Reference<MobEffect>> resolved = BuiltInRegistries.MOB_EFFECT.get(spec.effectId());
+                if (resolved.isEmpty()) {
+                    if (warnedUnknownEffects.add(spec.effectId())) {
+                        logger.warn("Unknown status effect '{}' in config/sdlinkrolegate.toml (effects.list), skipping.", spec.effectId());
+                    }
+                    continue;
+                }
+                desired.put(resolved.get(), spec.amplifier());
+            }
+
+            UUID uuid = player.getUUID();
+            Set<Holder<MobEffect>> previous = grantedEffects.getOrDefault(uuid, Set.of());
+            for (Holder<MobEffect> oldEffect : previous) {
+                if (!desired.containsKey(oldEffect)) {
+                    player.removeEffect(oldEffect);
+                }
+            }
+
+            boolean showParticles = effectsConfig.showParticles();
+            boolean showIcon = effectsConfig.showIcon();
+            for (Map.Entry<Holder<MobEffect>, Integer> entry : desired.entrySet()) {
+                Holder<MobEffect> effectHolder = entry.getKey();
+                int amplifier = entry.getValue();
+                MobEffectInstance current = player.getEffect(effectHolder);
+                if (current == null
+                        || !current.isInfiniteDuration()
+                        || current.getAmplifier() != amplifier
+                        || current.isVisible() != showParticles
+                        || current.showIcon() != showIcon) {
+                    player.addEffect(new MobEffectInstance(
+                            effectHolder,
+                            MobEffectInstance.INFINITE_DURATION,
+                            amplifier,
+                            false,
+                            showParticles,
+                            showIcon
+                    ));
+                }
+            }
+
+            grantedEffects.put(uuid, Set.copyOf(desired.keySet()));
+        }
+
+        private void clearGrantedEffects(ServerPlayer player) {
+            Set<Holder<MobEffect>> granted = grantedEffects.remove(player.getUUID());
+            if (granted != null) {
+                for (Holder<MobEffect> effect : granted) {
+                    player.removeEffect(effect);
+                }
+            }
+        }
+
+        private void removeConfiguredInfiniteEffects(ServerPlayer player, ModConfig.EffectsConfig effectsConfig) {
+            for (ModConfig.EffectSpec spec : effectsConfig.effects()) {
+                BuiltInRegistries.MOB_EFFECT.get(spec.effectId()).ifPresent(holder -> {
+                    MobEffectInstance existing = player.getEffect(holder);
+                    if (existing != null && existing.isInfiniteDuration()) {
+                        player.removeEffect(holder);
+                    }
+                });
             }
         }
     }

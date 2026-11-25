@@ -3,12 +3,15 @@ package com.sdlinkrolegate.config;
 import com.electronwill.nightconfig.core.file.CommentedFileConfig;
 import com.electronwill.nightconfig.core.file.FileNotFoundAction;
 import com.electronwill.nightconfig.toml.TomlFormat;
+import net.minecraft.resources.Identifier;
 import net.minecraft.world.BossEvent;
 import org.slf4j.Logger;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -147,6 +150,38 @@ public final class ModConfig {
                     "Button label for dismissing the login modal."
             );
 
+            boolean blockItemPickup = ensureBoolean(
+                    fileConfig,
+                    "restrictions.blockItemPickup",
+                    defaults.restrictions().blockItemPickup(),
+                    "When true (default), unverified players cannot pick up items (or arrows/tridents) from the ground."
+            );
+
+            boolean effectsEnabled = ensureBoolean(
+                    fileConfig,
+                    "effects.enabled",
+                    defaults.effects().enabled(),
+                    "Whether to grant status effects to players while they are unverified (removed automatically once verified)."
+            );
+            boolean effectsShowParticles = ensureBoolean(
+                    fileConfig,
+                    "effects.showParticles",
+                    defaults.effects().showParticles(),
+                    "Whether the status effects applied to unverified players show particles (default false = no particles)."
+            );
+            boolean effectsShowIcon = ensureBoolean(
+                    fileConfig,
+                    "effects.showIcon",
+                    defaults.effects().showIcon(),
+                    "Whether the status effects applied to unverified players show an icon on the client HUD."
+            );
+            List<String> rawEffects = ensureStringList(
+                    fileConfig,
+                    "effects.list",
+                    defaults.effects().rawEffects(),
+                    "Status effects granted while unverified. Format: \"minecraft:effect_id\" or \"minecraft:effect_id:amplifier\" (0 = level I)."
+            );
+
             boolean lpEnabled = ensureBoolean(
                     fileConfig,
                     "luckperms.enabled",
@@ -164,6 +199,7 @@ public final class ModConfig {
 
             BossEvent.BossBarColor parsedColor = parseColor(bossbarColorRaw);
             BossEvent.BossBarOverlay parsedStyle = parseStyle(bossbarStyleRaw);
+            List<EffectSpec> parsedEffects = parseEffectSpecs(rawEffects);
 
             this.data = new ConfigData(
                     requiredRoleId.trim(),
@@ -171,6 +207,8 @@ public final class ModConfig {
                     new BossbarConfig(bossbarEnabled, bossbarId.trim(), bossbarText, bossbarColorRaw, bossbarStyleRaw, parsedColor, parsedStyle),
                     new MessagesConfig(blockBreakDenied, blockPlaceDenied, interactionDenied),
                     new ModalConfig(modalEnabled, modalTitle, modalBody, inviteButtonText, closeButtonText),
+                    new RestrictionsConfig(blockItemPickup),
+                    new EffectsConfig(effectsEnabled, effectsShowParticles, effectsShowIcon, List.copyOf(rawEffects), parsedEffects),
                     new LuckPermsConfig(lpEnabled, lpGroup.trim())
             );
         } catch (Exception e) {
@@ -200,6 +238,81 @@ public final class ModConfig {
             return Boolean.parseBoolean(String.valueOf(raw));
         }
         return defaultValue;
+    }
+
+    private static List<String> ensureStringList(CommentedFileConfig cfg, String path, List<String> defaultValue, String comment) {
+        if (!cfg.contains(path)) {
+            cfg.set(path, new ArrayList<>(defaultValue));
+        }
+        cfg.setComment(path, comment);
+        Object raw = cfg.get(path);
+        if (raw instanceof List<?> list) {
+            List<String> result = new ArrayList<>(list.size());
+            for (Object item : list) {
+                if (item != null) {
+                    result.add(String.valueOf(item));
+                }
+            }
+            return result;
+        }
+        if (raw != null) {
+            return List.of(String.valueOf(raw));
+        }
+        return defaultValue;
+    }
+
+    private List<EffectSpec> parseEffectSpecs(List<String> rawEntries) {
+        List<EffectSpec> parsed = new ArrayList<>();
+        for (String entry : rawEntries) {
+            if (entry == null || entry.isBlank()) {
+                continue;
+            }
+            String trimmed = entry.trim().toLowerCase(Locale.ROOT);
+            String effectPart = trimmed;
+            int amplifier = 0;
+
+            int lastColon = trimmed.lastIndexOf(':');
+            if (lastColon > 0) {
+                String maybeAmplifier = trimmed.substring(lastColon + 1);
+                if (isInteger(maybeAmplifier)) {
+                    effectPart = trimmed.substring(0, lastColon);
+                    try {
+                        amplifier = Math.max(0, Math.min(255, Integer.parseInt(maybeAmplifier)));
+                    } catch (NumberFormatException ignored) {
+                        logger.warn("Invalid amplifier in effects.list entry '{}' in {}, skipping.", entry, configPath);
+                        continue;
+                    }
+                }
+            }
+
+            String namespaced = effectPart.contains(":") ? effectPart : "minecraft:" + effectPart;
+            Identifier id = Identifier.tryParse(namespaced);
+            if (id == null) {
+                logger.warn("Invalid effect identifier '{}' in {} (effects.list), skipping.", entry, configPath);
+                continue;
+            }
+            parsed.add(new EffectSpec(id, amplifier));
+        }
+        return List.copyOf(parsed);
+    }
+
+    private static boolean isInteger(String s) {
+        if (s.isEmpty()) {
+            return false;
+        }
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (i == 0 && (c == '-' || c == '+')) {
+                if (s.length() == 1) {
+                    return false;
+                }
+                continue;
+            }
+            if (!Character.isDigit(c)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     private BossEvent.BossBarColor parseColor(String raw) {
@@ -233,8 +346,19 @@ public final class ModConfig {
             BossbarConfig bossbar,
             MessagesConfig messages,
             ModalConfig modal,
+            RestrictionsConfig restrictions,
+            EffectsConfig effects,
             LuckPermsConfig luckPerms
     ) {
+        private static final List<String> DEFAULT_EFFECT_NAMES = List.of(
+                "minecraft:saturation",
+                "minecraft:invisibility"
+        );
+        private static final List<EffectSpec> DEFAULT_EFFECT_SPECS = List.of(
+                new EffectSpec(Identifier.parse("minecraft:saturation"), 0),
+                new EffectSpec(Identifier.parse("minecraft:invisibility"), 0)
+        );
+
         public static ConfigData defaults() {
             return new ConfigData(
                     "",
@@ -260,6 +384,8 @@ public final class ModConfig {
                             "Join Discord",
                             "Close"
                     ),
+                    new RestrictionsConfig(true),
+                    new EffectsConfig(true, false, false, DEFAULT_EFFECT_NAMES, DEFAULT_EFFECT_SPECS),
                     new LuckPermsConfig(true, "unverified")
             );
         }
@@ -289,6 +415,26 @@ public final class ModConfig {
             String body,
             String inviteButtonText,
             String closeButtonText
+    ) {
+    }
+
+    public record RestrictionsConfig(
+            boolean blockItemPickup
+    ) {
+    }
+
+    public record EffectSpec(
+            Identifier effectId,
+            int amplifier
+    ) {
+    }
+
+    public record EffectsConfig(
+            boolean enabled,
+            boolean showParticles,
+            boolean showIcon,
+            List<String> rawEffects,
+            List<EffectSpec> effects
     ) {
     }
 

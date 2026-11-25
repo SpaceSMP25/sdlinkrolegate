@@ -27,7 +27,8 @@ A server-side **Fabric mod for Minecraft 26.3** that prevents players from break
   - Reacts immediately to live Discord role additions/removals (`GuildMemberRoleAddEvent` / `GuildMemberRoleRemoveEvent`), Discord leaves/bans, and SDLink `/discordverify` link/unlink events without requiring a relog.
 - **Unverified Player Restrictions**:
   - Sets unverified players to **Adventure** mode.
-  - Cancels block breaking, block placing, chest/container/block interactions, entity interactions, and placeable/world-modifying item usage.
+  - Cancels block breaking, block placing, chest/container/block interactions, entity interactions, placeable/world-modifying item usage, and (configurable, enabled by default) item/arrow pickup.
+  - Optionally grants configurable status effects while unverified (`minecraft:saturation` and `minecraft:invisibility` with no particles by default), removed automatically when verified.
   - Sends configurable chat messages every time an unverified player attempts a restricted action.
 - **Bossbar & Native 26.3 Login Modal**:
   - Shows a customizable bossbar (text, color, style, ID, enabled toggle).
@@ -64,6 +65,15 @@ title = "Discord Verification Required"
 body = "Join our Discord server and verify your account to interact with the server."
 inviteButtonText = "Join Discord"
 closeButtonText = "Close"
+
+[restrictions]
+blockItemPickup = true
+
+[effects]
+enabled = true
+showParticles = false
+showIcon = false
+list = ["minecraft:saturation", "minecraft:invisibility"]
 
 [luckperms]
 enabled = true

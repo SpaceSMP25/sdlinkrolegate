@@ -175,6 +175,37 @@ class RoleGateManagerTest {
         assertEquals(1, host.verifiedCalls.getOrDefault(uuid, 0));
     }
 
+    @Test
+    void reloadUpdatesEffectsAndPickupConfigSnapshot() throws Exception {
+        ModConfig.ConfigData initial = modConfig.get();
+        assertTrue(initial.restrictions().blockItemPickup());
+        assertTrue(initial.effects().enabled());
+        assertFalse(initial.effects().showParticles());
+        assertEquals(2, initial.effects().effects().size());
+
+        Files.writeString(tempDir.resolve("sdlinkrolegate.toml"), """
+                requiredRoleId = "999888777"
+
+                [restrictions]
+                blockItemPickup = false
+
+                [effects]
+                enabled = false
+                showParticles = true
+                list = ["minecraft:slowness:1"]
+                """);
+
+        manager.reload();
+
+        ModConfig.ConfigData reloaded = modConfig.get();
+        assertFalse(reloaded.restrictions().blockItemPickup());
+        assertFalse(reloaded.effects().enabled());
+        assertTrue(reloaded.effects().showParticles());
+        assertEquals(1, reloaded.effects().effects().size());
+        assertEquals("minecraft:slowness", reloaded.effects().effects().get(0).effectId().toString());
+        assertEquals(1, reloaded.effects().effects().get(0).amplifier());
+    }
+
     private record TestPlayer(UUID uuid, String name, boolean isDisconnected, boolean isOperator)
             implements RoleGateManager.PlayerRef {
     }

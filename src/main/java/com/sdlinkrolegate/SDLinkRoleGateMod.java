@@ -13,6 +13,7 @@ import net.fabricmc.fabric.api.entity.event.v1.ServerPlayerEvents;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.world.entity.player.Player;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -23,6 +24,12 @@ public final class SDLinkRoleGateMod implements DedicatedServerModInitializer {
 
     public static final String MOD_ID = "sdlinkrolegate";
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
+    private static volatile RoleGateManager activeManager;
+
+    public static boolean shouldBlockItemPickup(Player player) {
+        RoleGateManager manager = activeManager;
+        return manager != null && manager.shouldBlockItemPickup(player);
+    }
 
     @Override
     public void onInitializeServer() {
@@ -31,6 +38,7 @@ public final class SDLinkRoleGateMod implements DedicatedServerModInitializer {
 
         SDLinkRoleChecker roleChecker = new SDLinkRoleChecker(LOGGER);
         RoleGateManager roleGateManager = new RoleGateManager(modConfig, roleChecker, LOGGER);
+        activeManager = roleGateManager;
 
         ServerLifecycleEvents.SERVER_STARTED.register(roleGateManager::onServerStarted);
         ServerLifecycleEvents.SERVER_STOPPING.register(roleGateManager::onServerStopping);
