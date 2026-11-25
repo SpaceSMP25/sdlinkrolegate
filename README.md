@@ -1,5 +1,8 @@
+
+
 # Simple Discord Link Role Gate (`sdlinkrolegate`)
 
+## This mod is fully vibecoded, created for SpaceSMP. Do not use this if you dont know how to code, this mod may not be maintained 
 A server-side **Fabric mod for Minecraft 26.3** that prevents players from breaking blocks, placing blocks, or interacting with containers/entities until they link their Discord account via **Simple Discord Link (SDLink)** and hold a configured Discord role.
 
 ## Requirements
