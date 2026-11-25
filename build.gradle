@@ -1,0 +1,72 @@
+plugins {
+	id 'net.fabricmc.fabric-loom' version "${loom_version}"
+	id 'maven-publish'
+}
+
+version = project.mod_version
+group = project.maven_group
+
+base {
+	archivesName = project.archives_base_name
+}
+
+repositories {
+	mavenCentral()
+	maven {
+		name = "FirstDarkDev"
+		url = "https://maven.firstdark.dev/releases"
+	}
+}
+
+dependencies {
+	minecraft "com.mojang:minecraft:${project.minecraft_version}"
+	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
+	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+
+	// Simple Discord Link & CraterLib
+	compileOnly "com.hypherionmc.sdlink:sdlink:${project.sdlink_version}"
+	compileOnly "com.hypherionmc.craterlib:CraterLib-Fabric-${project.minecraft_version}:${project.craterlib_version}"
+
+	// LuckPerms (soft dependency)
+	compileOnly "net.luckperms:api:${project.luckperms_version}"
+
+	// NightConfig TOML (Jar-in-Jar)
+	implementation "com.electronwill.night-config:core:${project.nightconfig_version}"
+	implementation "com.electronwill.night-config:toml:${project.nightconfig_version}"
+	include "com.electronwill.night-config:core:${project.nightconfig_version}"
+	include "com.electronwill.night-config:toml:${project.nightconfig_version}"
+
+	// Unit Testing
+	testImplementation platform("org.junit:junit-bom:5.13.4")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+test {
+	useJUnitPlatform()
+}
+
+processResources {
+	def modVersion = project.version
+	inputs.property "version", modVersion
+
+	filesMatching("fabric.mod.json") {
+		expand "version": modVersion
+	}
+}
+
+tasks.withType(JavaCompile).configureEach {
+	it.options.release = 25
+}
+
+java {
+	withSourcesJar()
+
+	sourceCompatibility = JavaVersion.VERSION_25
+	targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+	def projectName = project.name
+	inputs.property "projectName", projectName
+}

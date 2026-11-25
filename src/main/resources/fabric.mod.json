@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "sdlinkrolegate",
+  "version": "${version}",
+  "name": "Simple Discord Link Role Gate",
+  "description": "Restricts block and container interactions until players verify and hold a configured Discord role via Simple Discord Link.",
+  "authors": [
+    "sdlinkrolegate"
+  ],
+  "license": "MIT",
+  "environment": "server",
+  "entrypoints": {
+    "server": [
+      "com.sdlinkrolegate.SDLinkRoleGateMod"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*",
+    "sdlink": ">=3.4.0",
+    "craterlib": ">=3.1.0"
+  },
+  "suggests": {
+    "luckperms": ">=5.4"
+  }
+}

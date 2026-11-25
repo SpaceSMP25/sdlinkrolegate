@@ -1,0 +1,496 @@
+package com.sdlinkrolegate.gate;
+
+import com.sdlinkrolegate.compat.LuckPermsHook;
+import com.sdlinkrolegate.config.ModConfig;
+import com.sdlinkrolegate.discord.DiscordRoleListener;
+import com.sdlinkrolegate.discord.RoleLookup;
+import com.sdlinkrolegate.discord.SDLinkRoleChecker;
+import com.sdlinkrolegate.util.TextUtil;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.network.chat.Component;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerBossEvent;
+import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.server.permissions.Permissions;
+import net.minecraft.world.BossEvent;
+import net.minecraft.world.entity.player.Player;
+import net.minecraft.world.level.GameType;
+import org.slf4j.Logger;
+
+import java.nio.charset.StandardCharsets;
+import java.util.Collection;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * Coordinates role verification, Adventure mode enforcement, bossbar display,
+ * login modals, and optional LuckPerms group updates.
+ */
+public final class RoleGateManager {
+
+    interface PlayerRef {
+        UUID uuid();
+
+        String name();
+
+        boolean isDisconnected();
+
+        boolean isOperator();
+    }
+
+    interface GateHost {
+        boolean isRunning();
+
+        boolean isSameThread();
+
+        void execute(Runnable task);
+
+        PlayerRef getOnlinePlayer(UUID uuid);
+
+        Collection<PlayerRef> getOnlinePlayers();
+
+        void applyRestricted(PlayerRef player, ModConfig.ConfigData config, boolean showModal);
+
+        void applyVerified(PlayerRef player, ModConfig.ConfigData config, boolean wasRestricted);
+
+        void removeLuckPermsGroup(UUID uuid, String groupName);
+
+        void onConfigUpdated(ModConfig.ConfigData config);
+    }
+
+    private final ModConfig modConfig;
+    private final RoleLookup roleLookup;
+    private final SDLinkRoleChecker jdaLifecycle;
+    private final DiscordRoleListener discordRoleListener;
+    private final GateHost host;
+    private final Logger logger;
+
+    private final Set<UUID> restrictedPlayers = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean missingRoleWarningLogged = new AtomicBoolean(false);
+
+    public RoleGateManager(ModConfig modConfig, SDLinkRoleChecker roleChecker, Logger logger) {
+        this.modConfig = modConfig;
+        this.roleLookup = roleChecker;
+        this.jdaLifecycle = roleChecker;
+        this.discordRoleListener = new DiscordRoleListener(this);
+        this.logger = logger;
+        this.host = new MinecraftGateHost(logger);
+    }
+
+    RoleGateManager(ModConfig modConfig, RoleLookup roleLookup, GateHost host, Logger logger) {
+        this.modConfig = modConfig;
+        this.roleLookup = roleLookup;
+        this.jdaLifecycle = roleLookup instanceof SDLinkRoleChecker checker ? checker : null;
+        this.discordRoleListener = this.jdaLifecycle != null ? new DiscordRoleListener(this) : null;
+        this.host = host;
+        this.logger = logger;
+    }
+
+    public void onServerStarted(MinecraftServer minecraftServer) {
+        if (host instanceof MinecraftGateHost mcHost) {
+            mcHost.setServer(minecraftServer);
+        }
+        host.onConfigUpdated(modConfig.get());
+        if (roleLookup.isBotReady()) {
+            onBotReady();
+        }
+    }
+
+    public void onServerStopping(MinecraftServer minecraftServer) {
+        if (jdaLifecycle != null) {
+            jdaLifecycle.detachJdaListener(discordRoleListener);
+        }
+        if (host instanceof MinecraftGateHost mcHost) {
+            mcHost.shutdown();
+        }
+        restrictedPlayers.clear();
+    }
+
+    public void onBotReady() {
+        if (jdaLifecycle != null) {
+            jdaLifecycle.ensureJdaListenerAttached(discordRoleListener);
+        }
+        if (host.isRunning()) {
+            host.execute(() -> evaluateAllOnlinePlayers(false));
+        }
+    }
+
+    public void onPlayerJoin(ServerPlayer player) {
+        evaluatePlayer(new MinecraftPlayerRef(player), true);
+    }
+
+    void onPlayerJoin(PlayerRef player) {
+        evaluatePlayer(player, true);
+    }
+
+    public void onPlayerRespawn(ServerPlayer oldPlayer, ServerPlayer newPlayer) {
+        if (host instanceof MinecraftGateHost mcHost) {
+            mcHost.removeBossbarFrom(oldPlayer);
+        }
+        if (isOperator(newPlayer)) {
+            markVerified(new MinecraftPlayerRef(newPlayer));
+            return;
+        }
+        if (restrictedPlayers.contains(newPlayer.getUUID())) {
+            markUnverified(new MinecraftPlayerRef(newPlayer), false, "respawn while unverified");
+        }
+    }
+
+    public void onPlayerDisconnect(ServerPlayer player) {
+        restrictedPlayers.remove(player.getUUID());
+        if (host instanceof MinecraftGateHost mcHost) {
+            mcHost.removeBossbarFrom(player);
+        }
+    }
+
+    public void onPlayerVerificationChanged(UUID playerUuid) {
+        if (!host.isRunning()) {
+            return;
+        }
+        host.execute(() -> {
+            PlayerRef player = host.getOnlinePlayer(playerUuid);
+            if (player != null && !player.isDisconnected()) {
+                boolean wasRestricted = restrictedPlayers.contains(playerUuid);
+                evaluatePlayer(player, !wasRestricted);
+            }
+        });
+    }
+
+    public void onDiscordMemberUpdated(String discordUserId) {
+        if (!host.isRunning() || discordUserId == null || discordUserId.isBlank()) {
+            return;
+        }
+        host.execute(() -> {
+            for (PlayerRef player : host.getOnlinePlayers()) {
+                if (player.isDisconnected()) {
+                    continue;
+                }
+                Optional<String> linkedId = roleLookup.getLinkedDiscordId(player.uuid(), player.name());
+                if (linkedId.isPresent() && linkedId.get().equals(discordUserId)) {
+                    boolean wasRestricted = restrictedPlayers.contains(player.uuid());
+                    evaluatePlayer(player, !wasRestricted);
+                }
+            }
+        });
+    }
+
+    /**
+     * Reloads configuration from disk, updates bossbar styling, and re-evaluates all online players.
+     */
+    public synchronized void reload() {
+        ModConfig.ConfigData previousConfig = modConfig.get();
+        String previousGroup = previousConfig.luckPerms().unverifiedGroup();
+
+        missingRoleWarningLogged.set(false);
+        modConfig.load();
+        ModConfig.ConfigData newConfig = modConfig.get();
+
+        host.onConfigUpdated(newConfig);
+
+        if (!host.isRunning()) {
+            return;
+        }
+
+        if (previousGroup != null && !previousGroup.isBlank()
+                && (!newConfig.luckPerms().enabled() || !previousGroup.equalsIgnoreCase(newConfig.luckPerms().unverifiedGroup()))) {
+            for (UUID restrictedUuid : restrictedPlayers) {
+                host.removeLuckPermsGroup(restrictedUuid, previousGroup);
+            }
+        }
+
+        evaluateAllOnlinePlayers(false);
+    }
+
+    public boolean isRestricted(Player player) {
+        if (player == null) {
+            return false;
+        }
+        if (player instanceof ServerPlayer serverPlayer && isOperator(serverPlayer)) {
+            return false;
+        }
+        return restrictedPlayers.contains(player.getUUID());
+    }
+
+    public boolean isRestricted(UUID uuid) {
+        return uuid != null && restrictedPlayers.contains(uuid);
+    }
+
+    public boolean isOperator(ServerPlayer player) {
+        return player.permissions().hasPermission(Permissions.COMMANDS_OWNER);
+    }
+
+    private void evaluateAllOnlinePlayers(boolean allowModal) {
+        if (!host.isRunning()) {
+            return;
+        }
+        for (PlayerRef player : host.getOnlinePlayers()) {
+            if (!player.isDisconnected()) {
+                evaluatePlayer(player, allowModal);
+            }
+        }
+    }
+
+    private void evaluatePlayer(PlayerRef player, boolean allowModal) {
+        if (player.isDisconnected()) {
+            return;
+        }
+
+        if (player.isOperator()) {
+            markVerified(player);
+            return;
+        }
+
+        ModConfig.ConfigData config = modConfig.get();
+        String requiredRoleId = config.requiredRoleId();
+        if (requiredRoleId == null || requiredRoleId.isBlank()) {
+            if (missingRoleWarningLogged.compareAndSet(false, true)) {
+                logger.warn("requiredRoleId is empty in config/sdlinkrolegate.toml; treating non-OP players as unverified.");
+            }
+            markUnverified(player, allowModal, "requiredRoleId not configured");
+            return;
+        }
+
+        if (!roleLookup.isBotReady()) {
+            markUnverified(player, allowModal, "SDLink bot is not ready");
+            return;
+        }
+
+        Optional<String> linkedDiscordId = roleLookup.getLinkedDiscordId(player.uuid(), player.name());
+        if (linkedDiscordId.isEmpty()) {
+            markUnverified(player, allowModal, "player not linked in SDLink");
+            return;
+        }
+
+        UUID playerUuid = player.uuid();
+        boolean resolvedSynchronously = roleLookup.checkHasRole(
+                linkedDiscordId.get(),
+                requiredRoleId,
+                hasRole -> {
+                    if (!host.isRunning()) {
+                        return;
+                    }
+                    // If invoked synchronously (e.g. during JOIN before playersByUUID is populated), use `player` directly.
+                    final boolean sameThreadCallback = host.isSameThread();
+                    Runnable apply = () -> {
+                        PlayerRef target = sameThreadCallback
+                                ? (player.isDisconnected() ? null : player)
+                                : host.getOnlinePlayer(playerUuid);
+                        if (target == null || target.isDisconnected()) {
+                            return;
+                        }
+                        if (target.isOperator() || hasRole) {
+                            markVerified(target);
+                        } else {
+                            markUnverified(target, allowModal, "missing required Discord role " + requiredRoleId);
+                        }
+                    };
+                    if (sameThreadCallback) {
+                        apply.run();
+                    } else {
+                        host.execute(apply);
+                    }
+                }
+        );
+
+        // If an async Discord REST lookup is pending, apply fail-safe restriction immediately without flashing the modal yet.
+        if (!resolvedSynchronously) {
+            markUnverified(player, false, "pending async Discord role lookup");
+        }
+    }
+
+    private void markUnverified(PlayerRef player, boolean showModal, String reason) {
+        boolean newlyRestricted = restrictedPlayers.add(player.uuid());
+        if (newlyRestricted) {
+            logger.info("Restricting {} ({}): {}", player.name(), player.uuid(), reason);
+        }
+        host.applyRestricted(player, modConfig.get(), showModal);
+    }
+
+    private void markVerified(PlayerRef player) {
+        boolean wasRestricted = restrictedPlayers.remove(player.uuid());
+        if (wasRestricted) {
+            logger.info("Verified {} ({}); lifting restrictions.", player.name(), player.uuid());
+        }
+        host.applyVerified(player, modConfig.get(), wasRestricted);
+    }
+
+    private record MinecraftPlayerRef(ServerPlayer player) implements PlayerRef {
+        @Override
+        public UUID uuid() {
+            return player.getUUID();
+        }
+
+        @Override
+        public String name() {
+            return player.nameAndId().name();
+        }
+
+        @Override
+        public boolean isDisconnected() {
+            return player.hasDisconnected();
+        }
+
+        @Override
+        public boolean isOperator() {
+            return player.permissions().hasPermission(Permissions.COMMANDS_OWNER);
+        }
+    }
+
+    private static final class MinecraftGateHost implements GateHost {
+        private final Logger logger;
+        private final boolean luckPermsLoaded;
+        private volatile MinecraftServer server;
+        private volatile ServerBossEvent bossBar;
+        private volatile String activeBossbarId = "";
+
+        private MinecraftGateHost(Logger logger) {
+            this.logger = logger;
+            this.luckPermsLoaded = FabricLoader.getInstance().isModLoaded("luckperms");
+            if (this.luckPermsLoaded) {
+                logger.info("LuckPerms detected; group sync for unverified players is enabled (respecting config).");
+            }
+        }
+
+        private void setServer(MinecraftServer server) {
+            this.server = server;
+        }
+
+        private void shutdown() {
+            ServerBossEvent bar = this.bossBar;
+            if (bar != null) {
+                bar.removeAllPlayers();
+            }
+            this.server = null;
+        }
+
+        private void removeBossbarFrom(ServerPlayer player) {
+            ServerBossEvent bar = this.bossBar;
+            if (bar != null) {
+                bar.removePlayer(player);
+            }
+        }
+
+        @Override
+        public boolean isRunning() {
+            return server != null;
+        }
+
+        @Override
+        public boolean isSameThread() {
+            MinecraftServer srv = this.server;
+            return srv != null && srv.isSameThread();
+        }
+
+        @Override
+        public void execute(Runnable task) {
+            MinecraftServer srv = this.server;
+            if (srv != null) {
+                srv.execute(task);
+            }
+        }
+
+        @Override
+        public PlayerRef getOnlinePlayer(UUID uuid) {
+            MinecraftServer srv = this.server;
+            if (srv == null) {
+                return null;
+            }
+            ServerPlayer player = srv.getPlayerList().getPlayer(uuid);
+            return player != null ? new MinecraftPlayerRef(player) : null;
+        }
+
+        @Override
+        public Collection<PlayerRef> getOnlinePlayers() {
+            MinecraftServer srv = this.server;
+            if (srv == null) {
+                return java.util.List.of();
+            }
+            return srv.getPlayerList().getPlayers().stream()
+                    .<PlayerRef>map(MinecraftPlayerRef::new)
+                    .toList();
+        }
+
+        @Override
+        public void applyRestricted(PlayerRef playerRef, ModConfig.ConfigData config, boolean showModal) {
+            ServerPlayer player = ((MinecraftPlayerRef) playerRef).player();
+            if (player.gameMode() != GameType.ADVENTURE) {
+                player.setGameMode(GameType.ADVENTURE);
+            }
+
+            ServerBossEvent bar = this.bossBar;
+            if (bar != null) {
+                if (config.bossbar().enabled()) {
+                    bar.addPlayer(player);
+                } else {
+                    bar.removePlayer(player);
+                }
+            }
+
+            if (luckPermsLoaded && config.luckPerms().enabled()) {
+                LuckPermsHook.addPlayerToGroup(player.getUUID(), config.luckPerms().unverifiedGroup(), logger);
+            }
+
+            if (showModal && config.modal().enabled()) {
+                DialogHelper.showVerificationDialog(player, config);
+            }
+        }
+
+        @Override
+        public void applyVerified(PlayerRef playerRef, ModConfig.ConfigData config, boolean wasRestricted) {
+            ServerPlayer player = ((MinecraftPlayerRef) playerRef).player();
+            ServerBossEvent bar = this.bossBar;
+            if (bar != null) {
+                bar.removePlayer(player);
+            }
+
+            if (wasRestricted || (!playerRef.isOperator() && player.gameMode() == GameType.ADVENTURE)) {
+                if (player.gameMode() != GameType.SURVIVAL) {
+                    player.setGameMode(GameType.SURVIVAL);
+                }
+            }
+
+            if (luckPermsLoaded && config.luckPerms().enabled()) {
+                LuckPermsHook.removePlayerFromGroup(player.getUUID(), config.luckPerms().unverifiedGroup(), logger);
+            }
+        }
+
+        @Override
+        public void removeLuckPermsGroup(UUID uuid, String groupName) {
+            if (luckPermsLoaded) {
+                LuckPermsHook.removePlayerFromGroup(uuid, groupName, logger);
+            }
+        }
+
+        @Override
+        public void onConfigUpdated(ModConfig.ConfigData config) {
+            ModConfig.BossbarConfig bb = config.bossbar();
+            String desiredId = (bb.id() == null || bb.id().isBlank()) ? "sdlinkrolegate:unverified" : bb.id();
+            Component title = TextUtil.format(bb.text(), config.discordInviteLink());
+
+            ServerBossEvent existing = this.bossBar;
+            if (existing == null || !desiredId.equals(this.activeBossbarId)) {
+                if (existing != null) {
+                    existing.removeAllPlayers();
+                }
+                UUID uuid = UUID.nameUUIDFromBytes(desiredId.getBytes(StandardCharsets.UTF_8));
+                ServerBossEvent created = new ServerBossEvent(uuid, title, bb.color(), bb.style());
+                created.setProgress(1.0f);
+                created.setVisible(bb.enabled());
+                this.activeBossbarId = desiredId;
+                this.bossBar = created;
+            } else {
+                existing.setName(title);
+                existing.setColor(bb.color());
+                existing.setOverlay(bb.style());
+                existing.setProgress(1.0f);
+                existing.setVisible(bb.enabled());
+                if (!bb.enabled()) {
+                    existing.removeAllPlayers();
+                }
+            }
+        }
+    }
+}
