@@ -97,9 +97,11 @@ class RoleGateManagerTest {
         roleLookup.sync = false;
 
         manager.onPlayerJoin(noRolePlayer);
-        // Immediately fail-safe restricted without modal while REST call is pending.
+        // Immediately fail-safe restricted without showing bossbar/modal while REST call is pending.
         assertTrue(manager.isRestricted(noRoleUuid));
+        assertFalse(manager.shouldHideFromPlayerList(noRoleUuid));
         assertEquals(1, host.restrictedCalls.getOrDefault(noRoleUuid, 0));
+        assertEquals(0, host.promptCalls.getOrDefault(noRoleUuid, 0));
         assertEquals(0, host.modalCalls.getOrDefault(noRoleUuid, 0));
 
         // Player finishes joining into PlayerList before next tick runs async callback.
@@ -108,15 +110,19 @@ class RoleGateManagerTest {
         host.drainTasks();
 
         assertTrue(manager.isRestricted(noRoleUuid));
+        assertTrue(manager.shouldHideFromPlayerList(noRoleUuid));
+        assertEquals(1, host.promptCalls.getOrDefault(noRoleUuid, 0));
         assertEquals(1, host.modalCalls.getOrDefault(noRoleUuid, 0));
 
-        // Now test async unlock when member does have the role.
+        // Now test async unlock when member does have the role: never shows bossbar or modal.
         UUID hasRoleUuid = UUID.randomUUID();
         TestPlayer hasRolePlayer = new TestPlayer(hasRoleUuid, "AsyncHasRole", false, false);
         roleLookup.linkedIds.put(hasRoleUuid, "discord-async-yes");
 
         manager.onPlayerJoin(hasRolePlayer);
         assertTrue(manager.isRestricted(hasRoleUuid));
+        assertEquals(0, host.promptCalls.getOrDefault(hasRoleUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(hasRoleUuid, 0));
 
         host.onlinePlayers.put(hasRoleUuid, hasRolePlayer);
         roleLookup.completeAsync(true);
@@ -124,6 +130,7 @@ class RoleGateManagerTest {
 
         assertFalse(manager.isRestricted(hasRoleUuid));
         assertEquals(1, host.verifiedCalls.getOrDefault(hasRoleUuid, 0));
+        assertEquals(0, host.promptCalls.getOrDefault(hasRoleUuid, 0));
         assertEquals(0, host.modalCalls.getOrDefault(hasRoleUuid, 0));
     }
 
@@ -363,10 +370,11 @@ class RoleGateManagerTest {
         host.drainTasks();
         assertEquals(1, host.discordJoinCalls.getOrDefault(asyncVerifiedUuid, 0));
 
-        // 2) Bot not ready at join: player joins before SDLinkReadyEvent, then bot becomes ready.
+        // 2) Bot still connecting at join: player joins before SDLinkReadyEvent, then bot becomes ready.
         UUID startupUuid = UUID.randomUUID();
         TestPlayer startupPlayer = new TestPlayer(startupUuid, "StartupVerified", false, false);
         roleLookup.botReady = false;
+        roleLookup.botConnecting = true;
         roleLookup.sync = true;
         roleLookup.linkedIds.put(startupUuid, "discord-startup");
         roleLookup.membersWithRole.put("discord-startup", true);
@@ -374,13 +382,18 @@ class RoleGateManagerTest {
         manager.onPlayerJoin(startupPlayer);
         manager.onPlayerLoggedInProcessed(startupUuid);
         assertTrue(manager.shouldSuppressDiscordMessages(startupUuid));
+        assertEquals(0, host.promptCalls.getOrDefault(startupUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(startupUuid, 0));
 
         host.onlinePlayers.put(startupUuid, startupPlayer);
         roleLookup.botReady = true;
+        roleLookup.botConnecting = false;
         manager.onBotReady();
         host.drainTasks();
 
         assertFalse(manager.shouldSuppressDiscordMessages(startupUuid));
+        assertEquals(0, host.promptCalls.getOrDefault(startupUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(startupUuid, 0));
         assertEquals(1, host.discordJoinCalls.getOrDefault(startupUuid, 0));
 
         // 3) Truly unverified player leaves without verifying -> never announces join to Discord.
@@ -393,6 +406,47 @@ class RoleGateManagerTest {
         assertEquals(0, host.discordJoinCalls.getOrDefault(unverifiedUuid, 0));
     }
 
+    @Test
+    void defersPromptWhileBotConnectingAndShowsPromptOnlyIfUnverifiedOnceReady() {
+        UUID verifiedUuid = UUID.randomUUID();
+        UUID unverifiedUuid = UUID.randomUUID();
+        TestPlayer verified = new TestPlayer(verifiedUuid, "ConnectingVerified", false, false);
+        TestPlayer unverified = new TestPlayer(unverifiedUuid, "ConnectingUnverified", false, false);
+
+        roleLookup.botReady = false;
+        roleLookup.botConnecting = true;
+        roleLookup.linkedIds.put(verifiedUuid, "discord-ok");
+        roleLookup.membersWithRole.put("discord-ok", true);
+
+        manager.onPlayerJoin(verified);
+        manager.onPlayerJoin(unverified);
+        host.onlinePlayers.put(verifiedUuid, verified);
+        host.onlinePlayers.put(unverifiedUuid, unverified);
+
+        assertTrue(manager.isRestricted(verifiedUuid));
+        assertTrue(manager.isRestricted(unverifiedUuid));
+        assertFalse(manager.shouldHideFromPlayerList(verifiedUuid));
+        assertFalse(manager.shouldHideFromPlayerList(unverifiedUuid));
+        assertEquals(0, host.promptCalls.getOrDefault(verifiedUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(verifiedUuid, 0));
+        assertEquals(0, host.promptCalls.getOrDefault(unverifiedUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(unverifiedUuid, 0));
+
+        roleLookup.botReady = true;
+        roleLookup.botConnecting = false;
+        manager.onBotReady();
+        host.drainTasks();
+
+        assertFalse(manager.isRestricted(verifiedUuid));
+        assertEquals(0, host.promptCalls.getOrDefault(verifiedUuid, 0));
+        assertEquals(0, host.modalCalls.getOrDefault(verifiedUuid, 0));
+
+        assertTrue(manager.isRestricted(unverifiedUuid));
+        assertTrue(manager.shouldHideFromPlayerList(unverifiedUuid));
+        assertEquals(1, host.promptCalls.getOrDefault(unverifiedUuid, 0));
+        assertEquals(1, host.modalCalls.getOrDefault(unverifiedUuid, 0));
+    }
+
     private record TestPlayer(UUID uuid, String name, boolean isDisconnected, boolean isOperator)
             implements RoleGateManager.PlayerRef {
     }
@@ -402,11 +456,17 @@ class RoleGateManagerTest {
         final Map<String, Boolean> membersWithRole = new HashMap<>();
         final Queue<Consumer<Boolean>> pendingCallbacks = new ArrayDeque<>();
         boolean botReady = true;
+        boolean botConnecting = false;
         boolean sync = true;
 
         @Override
         public boolean isBotReady() {
             return botReady;
+        }
+
+        @Override
+        public boolean isBotConnecting() {
+            return botConnecting;
         }
 
         @Override
@@ -435,6 +495,7 @@ class RoleGateManagerTest {
     private static final class FakeGateHost implements RoleGateManager.GateHost {
         final Map<UUID, RoleGateManager.PlayerRef> onlinePlayers = new HashMap<>();
         final Map<UUID, Integer> restrictedCalls = new HashMap<>();
+        final Map<UUID, Integer> promptCalls = new HashMap<>();
         final Map<UUID, Integer> verifiedCalls = new HashMap<>();
         final Map<UUID, Integer> modalCalls = new HashMap<>();
         final Map<UUID, Integer> discordJoinCalls = new HashMap<>();
@@ -479,8 +540,11 @@ class RoleGateManagerTest {
         }
 
         @Override
-        public void applyRestricted(RoleGateManager.PlayerRef player, ModConfig.ConfigData config, boolean showModal) {
+        public void applyRestricted(RoleGateManager.PlayerRef player, ModConfig.ConfigData config, boolean showPrompt, boolean showModal) {
             restrictedCalls.merge(player.uuid(), 1, Integer::sum);
+            if (showPrompt) {
+                promptCalls.merge(player.uuid(), 1, Integer::sum);
+            }
             if (showModal) {
                 modalCalls.merge(player.uuid(), 1, Integer::sum);
             }

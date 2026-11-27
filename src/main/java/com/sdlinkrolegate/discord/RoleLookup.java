@@ -11,6 +11,14 @@ public interface RoleLookup {
 
     boolean isBotReady();
 
+    /**
+     * Returns {@code true} when SDLink's JDA instance exists and is still connecting or
+     * reconnecting rather than permanently disabled or shut down.
+     */
+    default boolean isBotConnecting() {
+        return false;
+    }
+
     Optional<String> getLinkedDiscordId(UUID playerUuid, String playerName);
 
     /**

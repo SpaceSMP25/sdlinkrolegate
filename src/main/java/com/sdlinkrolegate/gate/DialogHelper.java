@@ -5,6 +5,7 @@ import com.sdlinkrolegate.util.TextUtil;
 import net.minecraft.core.Holder;
 import net.minecraft.network.chat.ClickEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.protocol.common.ClientboundClearDialogPacket;
 import net.minecraft.server.dialog.ActionButton;
 import net.minecraft.server.dialog.CommonButtonData;
 import net.minecraft.server.dialog.CommonDialogData;
@@ -76,6 +77,15 @@ public final class DialogHelper {
         }
 
         player.openDialog(Holder.direct(dialog));
+    }
+
+    /**
+     * Dismisses any active server-driven dialog on the player's client.
+     */
+    public static void clearDialog(ServerPlayer player) {
+        if (player != null && !player.hasDisconnected() && player.connection != null) {
+            player.connection.send(ClientboundClearDialogPacket.INSTANCE);
+        }
     }
 
     private static Optional<URI> parseHttpUri(String rawUrl) {

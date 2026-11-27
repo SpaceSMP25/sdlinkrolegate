@@ -64,7 +64,7 @@ public final class RoleGateManager {
 
         Collection<PlayerRef> getOnlinePlayers();
 
-        void applyRestricted(PlayerRef player, ModConfig.ConfigData config, boolean showModal);
+        void applyRestricted(PlayerRef player, ModConfig.ConfigData config, boolean showPrompt, boolean showModal);
 
         void applyVerified(PlayerRef player, ModConfig.ConfigData config, boolean wasRestricted);
 
@@ -83,6 +83,8 @@ public final class RoleGateManager {
     private final Logger logger;
 
     private final Set<UUID> restrictedPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> pendingVerificationPlayers = ConcurrentHashMap.newKeySet();
+    private final Set<UUID> pendingModalPlayers = ConcurrentHashMap.newKeySet();
     private final Set<UUID> suppressedJoinPlayers = ConcurrentHashMap.newKeySet();
     private final Set<UUID> suppressedLeavePlayers = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean missingRoleWarningLogged = new AtomicBoolean(false);
@@ -112,6 +114,8 @@ public final class RoleGateManager {
         host.onConfigUpdated(modConfig.get());
         if (roleLookup.isBotReady()) {
             onBotReady();
+        } else if (jdaLifecycle != null && roleLookup.isBotConnecting()) {
+            jdaLifecycle.ensureJdaListenerAttached(discordRoleListener);
         }
     }
 
@@ -123,6 +127,8 @@ public final class RoleGateManager {
             mcHost.shutdown();
         }
         restrictedPlayers.clear();
+        pendingVerificationPlayers.clear();
+        pendingModalPlayers.clear();
         suppressedJoinPlayers.clear();
         suppressedLeavePlayers.clear();
     }
@@ -140,12 +146,17 @@ public final class RoleGateManager {
         UUID uuid = player.getUUID();
         suppressedLeavePlayers.remove(uuid);
         suppressedJoinPlayers.remove(uuid);
+        pendingVerificationPlayers.remove(uuid);
+        pendingModalPlayers.remove(uuid);
         evaluatePlayer(new MinecraftPlayerRef(player), true);
     }
 
     void onPlayerJoin(PlayerRef player) {
-        suppressedLeavePlayers.remove(player.uuid());
-        suppressedJoinPlayers.remove(player.uuid());
+        UUID uuid = player.uuid();
+        suppressedLeavePlayers.remove(uuid);
+        suppressedJoinPlayers.remove(uuid);
+        pendingVerificationPlayers.remove(uuid);
+        pendingModalPlayers.remove(uuid);
         evaluatePlayer(player, true);
     }
 
@@ -164,8 +175,10 @@ public final class RoleGateManager {
             markVerified(new MinecraftPlayerRef(newPlayer));
             return;
         }
-        if (restrictedPlayers.contains(newPlayer.getUUID())) {
-            markUnverified(new MinecraftPlayerRef(newPlayer), false, "respawn while unverified");
+        UUID uuid = newPlayer.getUUID();
+        if (restrictedPlayers.contains(uuid)) {
+            boolean showPrompt = !pendingVerificationPlayers.contains(uuid);
+            markUnverified(new MinecraftPlayerRef(newPlayer), showPrompt, false, "respawn while unverified");
         }
     }
 
@@ -178,6 +191,8 @@ public final class RoleGateManager {
 
     void onPlayerDisconnect(UUID uuid) {
         suppressedJoinPlayers.remove(uuid);
+        pendingVerificationPlayers.remove(uuid);
+        pendingModalPlayers.remove(uuid);
         boolean wasRestricted = restrictedPlayers.remove(uuid);
         if (wasRestricted && modConfig.get().restrictions().suppressDiscordMessages()) {
             suppressedLeavePlayers.add(uuid);
@@ -291,7 +306,10 @@ public final class RoleGateManager {
 
     public boolean shouldHideFromPlayerList(UUID uuid) {
         ModConfig.InvisibilityConfig invisibility = modConfig.get().invisibility();
-        return invisibility.enabled() && invisibility.hideFromPlayerList() && isRestricted(uuid);
+        return invisibility.enabled()
+                && invisibility.hideFromPlayerList()
+                && isRestricted(uuid)
+                && !pendingVerificationPlayers.contains(uuid);
     }
 
     public boolean shouldHideEntityFrom(ServerPlayer target, ServerPlayer observer) {
@@ -306,7 +324,10 @@ public final class RoleGateManager {
             return false;
         }
         ModConfig.InvisibilityConfig invisibility = modConfig.get().invisibility();
-        return invisibility.enabled() && invisibility.hideNametag() && isRestricted(targetUuid);
+        return invisibility.enabled()
+                && invisibility.hideNametag()
+                && isRestricted(targetUuid)
+                && !pendingVerificationPlayers.contains(targetUuid);
     }
 
     public boolean isOperator(ServerPlayer player) {
@@ -319,7 +340,8 @@ public final class RoleGateManager {
         }
         for (PlayerRef player : host.getOnlinePlayers()) {
             if (!player.isDisconnected()) {
-                evaluatePlayer(player, allowModal);
+                boolean effectiveModal = allowModal || pendingModalPlayers.remove(player.uuid());
+                evaluatePlayer(player, effectiveModal);
             }
         }
     }
@@ -336,30 +358,43 @@ public final class RoleGateManager {
 
         ModConfig.ConfigData config = modConfig.get();
         String requiredRoleId = config.requiredRoleId();
-        if (requiredRoleId == null || requiredRoleId.isBlank()) {
+        if (!SDLinkRoleChecker.hasConfiguredRole(requiredRoleId)) {
             if (missingRoleWarningLogged.compareAndSet(false, true)) {
                 logger.warn("requiredRoleId is empty in config/sdlinkrolegate.toml; treating non-OP players as unverified.");
             }
-            markUnverified(player, allowModal, "requiredRoleId not configured");
-            return;
-        }
-
-        if (!roleLookup.isBotReady()) {
-            markUnverified(player, allowModal, "SDLink bot is not ready");
-            return;
-        }
-
-        Optional<String> linkedDiscordId = roleLookup.getLinkedDiscordId(player.uuid(), player.name());
-        if (linkedDiscordId.isEmpty()) {
-            markUnverified(player, allowModal, "player not linked in SDLink");
+            markUnverified(player, true, allowModal, "requiredRoleId not configured");
             return;
         }
 
         UUID playerUuid = player.uuid();
+        if (!roleLookup.isBotReady()) {
+            if (roleLookup.isBotConnecting()) {
+                if (allowModal) {
+                    pendingModalPlayers.add(playerUuid);
+                }
+                markPendingVerification(player, "waiting for SDLink bot connection");
+                return;
+            }
+            markUnverified(player, true, allowModal, "SDLink bot is not ready");
+            return;
+        }
+
+        Optional<String> linkedDiscordId = roleLookup.getLinkedDiscordId(playerUuid, player.name());
+        if (linkedDiscordId.isEmpty()) {
+            boolean showModal = allowModal || pendingModalPlayers.remove(playerUuid);
+            markUnverified(player, true, showModal, "player not linked in SDLink");
+            return;
+        }
+
+        if (allowModal) {
+            pendingModalPlayers.add(playerUuid);
+        }
+        final AtomicBoolean resolvedInline = new AtomicBoolean(false);
         boolean resolvedSynchronously = roleLookup.checkHasRole(
                 linkedDiscordId.get(),
                 requiredRoleId,
                 hasRole -> {
+                    resolvedInline.set(true);
                     if (!host.isRunning()) {
                         return;
                     }
@@ -375,7 +410,8 @@ public final class RoleGateManager {
                         if (target.isOperator() || hasRole) {
                             markVerified(target);
                         } else {
-                            markUnverified(target, allowModal, "missing required Discord role " + requiredRoleId);
+                            boolean showModal = allowModal || pendingModalPlayers.remove(playerUuid);
+                            markUnverified(target, true, showModal, "missing required Discord role " + requiredRoleId);
                         }
                     };
                     if (sameThreadCallback) {
@@ -386,25 +422,44 @@ public final class RoleGateManager {
                 }
         );
 
-        // If an async Discord REST lookup is pending, apply fail-safe restriction immediately without flashing the modal yet.
-        if (!resolvedSynchronously) {
-            markUnverified(player, false, "pending async Discord role lookup");
+        // If an async Discord REST lookup is pending, apply fail-safe gameplay restriction silently
+        // without flashing the unverified bossbar or modal until Discord responds.
+        if (!resolvedSynchronously && !resolvedInline.get()) {
+            markPendingVerification(player, "pending async Discord role lookup");
         }
     }
 
-    private void markUnverified(PlayerRef player, boolean showModal, String reason) {
-        boolean newlyRestricted = restrictedPlayers.add(player.uuid());
-        if (newlyRestricted) {
-            logger.info("Restricting {} ({}): {}", player.name(), player.uuid(), reason);
+    private void markPendingVerification(PlayerRef player, String reason) {
+        UUID uuid = player.uuid();
+        boolean alreadyConfirmedRestricted = restrictedPlayers.contains(uuid) && !pendingVerificationPlayers.contains(uuid);
+        if (alreadyConfirmedRestricted) {
+            return;
         }
-        host.applyRestricted(player, modConfig.get(), showModal);
+        pendingVerificationPlayers.add(uuid);
+        markUnverified(player, false, false, reason);
+    }
+
+    private void markUnverified(PlayerRef player, boolean showPrompt, boolean showModal, String reason) {
+        UUID uuid = player.uuid();
+        if (showPrompt) {
+            pendingVerificationPlayers.remove(uuid);
+            pendingModalPlayers.remove(uuid);
+        }
+        boolean newlyRestricted = restrictedPlayers.add(uuid);
+        if (newlyRestricted) {
+            logger.info("Restricting {} ({}): {}", player.name(), uuid, reason);
+        }
+        host.applyRestricted(player, modConfig.get(), showPrompt, showModal);
     }
 
     private void markVerified(PlayerRef player) {
-        boolean wasRestricted = restrictedPlayers.remove(player.uuid());
-        boolean hadSuppressedJoin = suppressedJoinPlayers.remove(player.uuid());
+        UUID uuid = player.uuid();
+        pendingVerificationPlayers.remove(uuid);
+        pendingModalPlayers.remove(uuid);
+        boolean wasRestricted = restrictedPlayers.remove(uuid);
+        boolean hadSuppressedJoin = suppressedJoinPlayers.remove(uuid);
         if (wasRestricted) {
-            logger.info("Verified {} ({}); lifting restrictions.", player.name(), player.uuid());
+            logger.info("Verified {} ({}); lifting restrictions.", player.name(), uuid);
         }
         host.applyVerified(player, modConfig.get(), wasRestricted);
         if (hadSuppressedJoin && modConfig.get().restrictions().suppressDiscordMessages()) {
@@ -440,6 +495,8 @@ public final class RoleGateManager {
         private final Map<UUID, Set<Holder<MobEffect>>> grantedEffects = new ConcurrentHashMap<>();
         private final Set<UUID> grantedInvisibility = ConcurrentHashMap.newKeySet();
         private final Set<UUID> hiddenInPlayerList = ConcurrentHashMap.newKeySet();
+        private final Set<UUID> openDialogPlayers = ConcurrentHashMap.newKeySet();
+        private final Map<UUID, GameType> savedGameModes = new ConcurrentHashMap<>();
         private final Set<Identifier> warnedUnknownEffects = ConcurrentHashMap.newKeySet();
 
         private volatile MinecraftServer server;
@@ -469,6 +526,8 @@ public final class RoleGateManager {
             grantedEffects.clear();
             grantedInvisibility.clear();
             hiddenInPlayerList.clear();
+            openDialogPlayers.clear();
+            savedGameModes.clear();
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
                 bar.removeAllPlayers();
@@ -489,10 +548,13 @@ public final class RoleGateManager {
         }
 
         private void cleanupDisconnected(ServerPlayer player) {
+            UUID uuid = player.getUUID();
             removeBossbarFrom(player);
             clearGrantedEffects(player);
             clearGrantedInvisibility(player);
-            hiddenInPlayerList.remove(player.getUUID());
+            hiddenInPlayerList.remove(uuid);
+            openDialogPlayers.remove(uuid);
+            savedGameModes.remove(uuid);
         }
 
         @Override
@@ -536,10 +598,16 @@ public final class RoleGateManager {
         }
 
         @Override
-        public void applyRestricted(PlayerRef playerRef, ModConfig.ConfigData config, boolean showModal) {
+        public void applyRestricted(PlayerRef playerRef, ModConfig.ConfigData config, boolean showPrompt, boolean showModal) {
             ServerPlayer player = ((MinecraftPlayerRef) playerRef).player();
+            UUID uuid = player.getUUID();
             if (player.gameMode() != GameType.ADVENTURE) {
+                savedGameModes.putIfAbsent(uuid, player.gameMode());
                 player.setGameMode(GameType.ADVENTURE);
+            }
+
+            if (!showPrompt) {
+                return;
             }
 
             syncRestrictedEffects(player, config.effects());
@@ -555,10 +623,11 @@ public final class RoleGateManager {
             }
 
             if (luckPermsLoaded && config.luckPerms().enabled()) {
-                LuckPermsHook.addPlayerToGroup(player.getUUID(), config.luckPerms().unverifiedGroup(), logger);
+                LuckPermsHook.addPlayerToGroup(uuid, config.luckPerms().unverifiedGroup(), logger);
             }
 
             if (showModal && config.modal().enabled()) {
+                openDialogPlayers.add(uuid);
                 DialogHelper.showVerificationDialog(player, config);
             }
         }
@@ -566,23 +635,32 @@ public final class RoleGateManager {
         @Override
         public void applyVerified(PlayerRef playerRef, ModConfig.ConfigData config, boolean wasRestricted) {
             ServerPlayer player = ((MinecraftPlayerRef) playerRef).player();
+            UUID uuid = player.getUUID();
             ServerBossEvent bar = this.bossBar;
             if (bar != null) {
                 bar.removePlayer(player);
             }
 
+            if (openDialogPlayers.remove(uuid)) {
+                DialogHelper.clearDialog(player);
+            }
+
             clearGrantedEffects(player);
             syncStealth(player, config.invisibility(), false);
+            GameType previousMode = savedGameModes.remove(uuid);
             if (wasRestricted || (!playerRef.isOperator() && player.gameMode() == GameType.ADVENTURE)) {
                 removeConfiguredInfiniteEffects(player, config.effects());
                 removeInfiniteInvisibility(player);
-                if (player.gameMode() != GameType.SURVIVAL) {
-                    player.setGameMode(GameType.SURVIVAL);
+                GameType targetMode = (previousMode != null && previousMode != GameType.ADVENTURE)
+                        ? previousMode
+                        : GameType.SURVIVAL;
+                if (player.gameMode() != targetMode) {
+                    player.setGameMode(targetMode);
                 }
             }
 
             if (luckPermsLoaded && config.luckPerms().enabled()) {
-                LuckPermsHook.removePlayerFromGroup(player.getUUID(), config.luckPerms().unverifiedGroup(), logger);
+                LuckPermsHook.removePlayerFromGroup(uuid, config.luckPerms().unverifiedGroup(), logger);
             }
         }
 
